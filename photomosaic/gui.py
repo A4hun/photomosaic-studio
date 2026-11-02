@@ -728,11 +728,19 @@ def _ingest_fn(folders: List[str], db_path: str, variants: List[str], thumb: int
 
 
 def _render_fn(master_file: str, db_path: str, out: str, params: Dict[str, object],
-               cancel: Optional[threading.Event] = None):
+               cancel: Optional[threading.Event] = None,
+               pause: Optional[threading.Event] = None):
     def fn(progress, message):
+        def p(done: int, total: int) -> None:
+            # 暂停时阻塞 worker 线程（取消可中断暂停），实现手动暂停
+            while pause is not None and pause.is_set():
+                if cancel is not None and cancel.is_set():
+                    break
+                time.sleep(0.1)
+            progress(done, total)
         try:
             with TileDB(db_path) as db:
-                return make_mosaic(master_file, db, out, progress=progress, status=message,
+                return make_mosaic(master_file, db, out, progress=p, status=message,
                                    should_cancel=(cancel.is_set if cancel else None),
                                    **params)
         except RenderCancelled:
@@ -779,6 +787,7 @@ class MainWindow(QMainWindow):
         self._render_mode = "uniform"
         self._ingest_ctrl: Optional[IngestControl] = None
         self._render_cancel = threading.Event()
+        self._render_pause = threading.Event()      # 置位 = 暂停生成（可续跑）
         # 第③页分栏：保存的 base64 状态待首次显示后应用（构造时布局未定，
         # 立即 restoreState 会被随后的布局冲掉）
         self._splitter3_saved: Optional[str] = None
@@ -1748,6 +1757,12 @@ class MainWindow(QMainWindow):
         self.btn_cancel_render.setEnabled(False)
         self.btn_cancel_render.clicked.connect(lambda: self._render_cancel.set())
         row.addWidget(self.btn_cancel_render)
+        self.btn_pause_render = QPushButton("暂停生成")
+        self.btn_pause_render.setEnabled(False)
+        self.btn_pause_render.setCheckable(True)
+        self.btn_pause_render.setToolTip("暂停后进度保留，点“继续生成”接着跑；与“取消”不同，暂停不写断点。")
+        self.btn_pause_render.toggled.connect(self._toggle_pause_render)
+        row.addWidget(self.btn_pause_render)
         row.addWidget(QLabel("缩放"))
         self.zoom_combo = QComboBox()
         self.zoom_combo.addItems(["适应窗口", "50%", "100%", "200%"])
@@ -1860,6 +1875,7 @@ class MainWindow(QMainWindow):
         self.stats_view = QTextEdit()
         self.stats_view.setReadOnly(True)
         self.stats_view.setMaximumHeight(110)
+        self.stats_view.setVisible(False)      # 空时不占位（结果区才能舒展开）
         lay.addWidget(self.stats_view)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
@@ -2079,15 +2095,24 @@ class MainWindow(QMainWindow):
             "first_level_factor": 2.0 if self.first_level_check.isChecked() else 1.0,
         }
         self._render_cancel.clear()
+        self._render_pause.clear()
         self.btn_cancel_render.setEnabled(True)
-        self.status_text.setText("正在生成…（取消会保存断点，同参数再次生成自动续传）")
+        self.btn_pause_render.setEnabled(True)
+        self.btn_pause_render.setChecked(False)
+        self.btn_pause_render.setText("暂停生成")
+        self.status_text.setText("正在生成…（可暂停；取消会保存断点，同参数再次生成自动续传）")
         self._last_output = out
-        self._start(_render_fn(master_file, db_path, out, params, self._render_cancel),
+        self._start(_render_fn(master_file, db_path, out, params,
+                               self._render_cancel, self._render_pause),
                     self._render_done)
 
     def _render_done(self, stats: object) -> None:
         self._set_busy(False)
         self.btn_cancel_render.setEnabled(False)
+        self.btn_pause_render.setEnabled(False)
+        self.btn_pause_render.setChecked(False)
+        self.btn_pause_render.setText("暂停生成")
+        self._render_pause.clear()
         self._finish_progress(not (isinstance(stats, dict) and stats.get("cancelled")))
         if isinstance(stats, dict) and stats.get("cancelled"):
             self.status_text.setText("生成已取消：断点已保存，同参数再次生成将自动续传")
@@ -2125,11 +2150,23 @@ class MainWindow(QMainWindow):
         self.result_view.leaves = self._render_leaves
         self._show_result()
         self.stats_view.setPlainText("\n".join(f"{k}: {v}" for k, v in stats.items()))
+        self.stats_view.setVisible(True)       # 有统计内容才显示
         self._goto(3)
         resumed = stats.get("resumed_pasted", 0)
         extra = f"（续传跳过 {resumed} 块）" if resumed else ""
         self.status_text.setText(
             f"完成（设备 {stats.get('device')}）{extra} → {stats['output']}")
+
+    def _toggle_pause_render(self, checked: bool) -> None:
+        """暂停/继续生成：暂停只挂起进度回调（不写断点），继续即接着跑。"""
+        if checked:
+            self._render_pause.set()
+            self.btn_pause_render.setText("继续生成")
+            self.status_text.setText("已暂停：进度保留，点“继续生成”接着跑")
+        else:
+            self._render_pause.clear()
+            self.btn_pause_render.setText("暂停生成")
+            self.status_text.setText("继续生成…")
 
     def _show_result(self, _idx: int = 0) -> None:
         if self._result_pix is None or self._result_pix.isNull():
@@ -2341,6 +2378,12 @@ class MainWindow(QMainWindow):
                 bar.setValue(min(done, total))
                 bar.setFormat(f"{unit} {done} / {total}  (%p%)" if unit
                               else f"{done} / {total}  (%p%)")
+        # 渲染期间把进度写到结果区中央（没成品时那里是占位文本）
+        if self.btn_cancel_render.isEnabled() and self._result_pix is None:
+            pct = int(100 * done / max(1, total)) if total > 0 else 0
+            unit_txt = f"{unit} " if unit else ""
+            self.result_view.setText(
+                f"正在生成… {pct}%\n{unit_txt}{done} / {total}")
 
     def _finish_progress(self, ok: bool) -> None:
         self._progress_unit = ""            # 结束后回到默认刻度
