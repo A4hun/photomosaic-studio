@@ -69,12 +69,62 @@ def test_estimate_follows_format_and_quality(tmp_path):
     w.close()
 
 
+def test_estimate_prefers_tile_library_content(tmp_path):
+    """库存在时按瓦片内容估算：纯色主图 + 噪点瓦片库 → 估值必须反映噪点（高比率）。"""
+    from photomosaic.db import TileDB
+    from photomosaic.library import ingest
+
+    # 纯色主图（自身压缩率极低）
+    flat = np.full((800, 1000, 3), 200, np.uint8)
+    w = _win_with_master(tmp_path, flat)
+    # 噪点瓦片库（真实照片的高熵内容）
+    rng = np.random.default_rng(0)
+    folder = tmp_path / "tiles"
+    folder.mkdir()
+    for i in range(6):
+        Image.fromarray(rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)).save(
+            folder / f"t{i}.png")
+    db_path = tmp_path / "tiles.db"
+    with TileDB(str(db_path)) as db:
+        ingest(db, str(folder))
+    w.db_edit.setText(str(db_path))
+
+    w.format_combo.setCurrentText("PNG")
+    w.cells_x_spin.setValue(15)
+    w.cell_px_spin.setValue(810)
+    w._update_out_info()
+    import re
+    shown = float(re.search(r"(\d+(?:\.\d+)?) (MB|GB)", w.out_info.text()).group(1))
+    # 纯色主图实测比率极低；若估值按主图会远低于按瓦片库的比率
+    master_ratio = w._master_sample_ratio("PNG")
+    tile_ratio = w._tile_sample_ratio("PNG")
+    assert tile_ratio is not None and tile_ratio > master_ratio * 3, \
+        f"tile_ratio {tile_ratio} 应远高于 master_ratio {master_ratio}"
+    # 文本估值应接近瓦片比率外推
+    ow = 15 * 810
+    oh = round(800 * ow / 1000)
+    expect_mb = ow * oh * tile_ratio / 1e6
+    assert abs(shown - expect_mb) / expect_mb < 0.05
+    w.close()
+
+
+def test_estimate_without_library_falls_back_to_master(tmp_path):
+    """没建库时回退主图实测（不为 None、不崩）。"""
+    photo = np.random.default_rng(0).integers(0, 255, (800, 1000, 3), dtype=np.uint8)
+    w = _win_with_master(tmp_path, photo)
+    w.db_edit.setText(str(tmp_path / "不存在.db"))
+    w.cells_x_spin.setValue(15)
+    w.cell_px_spin.setValue(810)
+    w._update_out_info()
+    assert "约" in w.out_info.text()
+    w.close()
+
+
 def test_exact_sizes_for_bmp_tiff(tmp_path):
     photo = np.random.default_rng(0).integers(0, 255, (800, 1000, 3), dtype=np.uint8)
     w = _win_with_master(tmp_path, photo)
     w.cells_x_spin.setValue(15)
     w.cell_px_spin.setValue(810)
-    px = 15 * 810 * (810 * 800 // 1000)
     for fmt in ("BMP", "TIFF"):
         w.format_combo.setCurrentText(fmt)
         txt = w.out_info.text()

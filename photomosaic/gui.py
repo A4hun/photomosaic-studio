@@ -756,6 +756,9 @@ class MainWindow(QMainWindow):
         # 主图压缩率缓存（_master_sample_ratio）：(路径,格式,质量) → 字节/像素
         self._ratio_cache_key: Optional[tuple] = None
         self._ratio_cache: float = 0.45
+        # 瓦片库压缩率缓存（_tile_sample_ratio）：(库路径,库大小,格式,质量) → 字节/像素
+        self._tile_ratio_key: Optional[tuple] = None
+        self._tile_ratio: Optional[float] = None
         self.resize(*self._DEFAULT_SIZE)
         self.setStyleSheet(_build_style())
         self.master_path: Optional[str] = None
@@ -1931,12 +1934,61 @@ class MainWindow(QMainWindow):
         self._ratio_cache = ratio
         return ratio
 
+    def _tile_sample_ratio(self, fmt: str) -> Optional[float]:
+        """按瓦片库内容实测压缩率：随机取若干张库内缩略图拼成样本画布，
+        按所选格式实际编码测出"字节/像素"。
+
+        成品就是瓦片拼出来的——这是内容上最准的代理（主图只是形状参考）。
+        库不存在或为空时返回 None，调用方回退主图实测。"""
+        db_path = self._db_path()
+        if not db_path or not os.path.exists(db_path):
+            return None
+        try:
+            st = os.path.getsize(db_path)
+        except OSError:
+            return None
+        key = (db_path, st, fmt, self.out_quality.value())
+        if self._tile_ratio_key == key:
+            return self._tile_ratio
+        ratio: Optional[float] = None
+        try:
+            with TileDB(db_path) as db:
+                tiles = db.load_arrays()
+                ids = tiles["ids"]
+                if len(ids):
+                    rng = np.random.default_rng(0)          # 固定采样，同库同估值
+                    k = int(min(16, len(ids)))
+                    pick = sorted(rng.choice(len(ids), k, replace=False).tolist())
+                    raws = db.get_thumbs([int(ids[i]) for i in pick])
+                    thumbs = [Image.open(io.BytesIO(raws[t])).convert("RGB")
+                              for t in raws]
+                    tw = max(1, thumbs[0].size[0])
+                    cols = max(1, int(np.ceil(np.sqrt(len(thumbs)))))
+                    canvas = Image.new("RGB", (cols * tw, cols * tw), (128, 128, 128))
+                    for i, th in enumerate(thumbs):
+                        canvas.paste(th, ((i % cols) * tw, (i // cols) * tw))
+                    buf = io.BytesIO()
+                    if fmt == "JPEG":
+                        canvas.save(buf, "JPEG",
+                                    quality=self.out_quality.value(), subsampling=0)
+                    else:
+                        canvas.save(buf, fmt)
+                    ratio = max(0.01, buf.tell() / float(canvas.width * canvas.height))
+        except Exception:
+            ratio = None
+        self._tile_ratio_key = key
+        self._tile_ratio = ratio
+        return ratio
+
     def _estimate_size_text(self, px: int) -> str:
         """按导出格式给出文件大小预估；流式 BigTIFF 与 BMP/TIFF 为精确值。"""
         fmt = self.format_combo.currentText()
         if px > STREAM_THRESHOLD_PX or fmt in ("TIFF", "BMP"):
             return f"≈{self._fmt_bytes(px * 3 + 4096)}"          # 无压缩，精确
-        ratio = self._master_sample_ratio(fmt)
+        # 优先按瓦片库内容实测（成品内容），无主图时回退主图实测
+        ratio = self._tile_sample_ratio(fmt)
+        if ratio is None:
+            ratio = self._master_sample_ratio(fmt)
         return f"约 {self._fmt_bytes(px * ratio)}"
 
     def _update_out_info(self) -> None:
