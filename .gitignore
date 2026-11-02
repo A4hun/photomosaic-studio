@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 测试与本地调试
+.pytest_cache/
+.pytest_tmp/
+_tmp_check/
+_acl_recovery/
+htmlcov/
+.coverage
+
+# ⚠ 逆向分析参考资料与真实素材（含商业软件分析与私人照片）——禁止进入公开仓库
+_ref/
+
+# 生成物与运行数据
+demo_output/
+*.db
+*.db-journal
+*.ckpt/
+*.preview.png
+poster/
+*_mosaic.png
+mosaic.png
+
+# 打包产物
+build/
+dist/
+*.egg-info/
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

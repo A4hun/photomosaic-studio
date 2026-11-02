@@ -1,0 +1,162 @@
+"""Assignment planner: decides which tile goes into which leaf.
+
+The classic approach matches every cell independently and picks one of the
+K nearest tiles at random, which (a) repeats the same photo next to itself,
+(b) over-uses a handful of "popular" colours and (c) ignores that a hard reuse
+cap or a colour radius only helps *after* the damage is done.
+
+This planner works in three steps:
+
+1. **Candidates** - the GPU/CPU matcher returns, for every leaf, the K nearest
+   tiles (streamed over tile blocks, so memory does not grow with the library).
+2. **Fair-share ordering** - leaves are visited in a seeded random order, so no
+   image region systematically gets the best tiles.
+3. **Penalised choice** - each candidate is scored by its normalised colour
+   error plus soft penalties: how often its *source photo* is already used
+   (relative to its fair share) and whether the same photo already sits next to
+   this leaf (checked on a coarse ownership map, across different leaf sizes).
+   A little seeded noise keeps the "near-best random" variety knob (``top_k``).
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+import numpy as np
+
+REUSE_WEIGHT = 0.5        # cost of using a photo `expected` times beyond fair share
+ADJACENT_PENALTY = 4.0    # in units of the candidate pool's error span
+JITTER = 0.8              # randomness amplitude (units of the pool's error span)
+
+
+def plan_assignments(
+    matcher,
+    boxes: np.ndarray,
+    feats: np.ndarray,
+    avgs: np.ndarray,
+    groups: np.ndarray,
+    size,
+    top_k: int = 8,
+    seed: Optional[int] = None,
+    max_reuse: int = 0,
+    avoid_adjacent: bool = True,
+    progress: Optional[Callable[[str, int, int], None]] = None,
+    check: Optional[Callable[[], None]] = None,
+):
+    """Return (tile positions (L,), distances (L,)) for every leaf.
+
+    ``groups`` maps tile position -> source-photo id (variants of the same photo
+    share one id).  ``check`` is called periodically and may raise to abort.
+    """
+    L = int(boxes.shape[0])
+    n = matcher.n
+    top_k = max(1, int(top_k))
+    strict = top_k <= 1            # K=1 keeps the classic "always the best match"
+    if strict:
+        avoid_adjacent = False
+    k = min(n, max(16, min(64, 2 * top_k)))
+    pool = min(top_k, k)
+
+    cand_i, cand_d = matcher.candidates(
+        feats, avgs, k,
+        progress=(lambda d, t: progress("match", d, t)) if progress else None,
+        check=check)
+
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(L)
+    jitter = (rng.random((L, k), dtype=np.float32) * JITTER) if top_k > 1 else None
+
+    G = int(groups.max()) + 1 if groups.size else 1
+    guse = np.zeros(G, dtype=np.float32)
+    expected = max(1.0, L / float(max(1, G)))
+    usage = matcher.usage                     # per tile position, shared with matcher
+
+    picks = np.empty(L, dtype=np.int64)
+    dists = np.empty(L, dtype=np.float64)
+
+    # ---- coarse ownership map for the adjacency check ----------------------
+    W, H = int(size[0]), int(size[1])
+    if avoid_adjacent:
+        min_side = max(1, int(min((boxes[:, 2] - boxes[:, 0]).min(),
+                                  (boxes[:, 3] - boxes[:, 1]).min())))
+        step = max(1, min_side // 2, int(np.ceil(max(W, H) / 3072.0)))
+        oh, ow_ = -(-H // step), -(-W // step)
+        owner = np.full((oh, ow_), -1, dtype=np.int32)
+        ring_t = 2
+        obox = np.empty((L, 4), dtype=np.int64)
+        obox[:, 0] = boxes[:, 0] // step
+        obox[:, 1] = boxes[:, 1] // step
+        obox[:, 2] = np.maximum(obox[:, 0] + 1, -(-boxes[:, 2] // step))
+        obox[:, 3] = np.maximum(obox[:, 1] + 1, -(-boxes[:, 3] // step))
+        np.clip(obox[:, [0, 2]], 0, ow_, out=obox[:, [0, 2]])
+        np.clip(obox[:, [1, 3]], 0, oh, out=obox[:, [1, 3]])
+
+    for t, i in enumerate(order):
+        if t % 512 == 0:
+            if check:
+                check()
+            if progress and t % 2048 == 0:
+                progress("plan", t, L)
+        ci = cand_i[i]
+        cd = cand_d[i]
+        cg = groups[ci]
+        d0 = float(cd[0])
+        chosen = -1
+        ring = None
+        if avoid_adjacent:
+            x0, y0, x1, y1 = obox[i]
+            parts = []
+            ya, yb = max(0, y0 - ring_t), min(oh, y1 + ring_t)
+            xa, xb = max(0, x0 - ring_t), min(ow_, x1 + ring_t)
+            if ya < y0:
+                parts.append(owner[ya:y0, xa:xb].ravel())
+            if y1 < yb:
+                parts.append(owner[y1:yb, xa:xb].ravel())
+            if xa < x0:
+                parts.append(owner[y0:y1, xa:x0].ravel())
+            if x1 < xb:
+                parts.append(owner[y0:y1, x1:xb].ravel())
+            if parts:
+                ring = np.unique(np.concatenate(parts))
+                ring = ring[ring >= 0]
+                if ring.size == 0:
+                    ring = None
+        if np.isfinite(d0):
+            span = float(cd[pool - 1]) - d0
+            if not np.isfinite(span) or span <= 1e-6:
+                span = max(abs(d0) * 0.25, 1.0)
+            cost = (cd - d0) / span
+            if not strict:
+                cost += (REUSE_WEIGHT / expected) * guse[cg]
+            if ring is not None:
+                if ring.size <= 48:
+                    hit = (cg[:, None] == ring[None, :]).any(axis=1)
+                else:
+                    hit = np.isin(cg, ring)
+                cost += ADJACENT_PENALTY * hit
+            if max_reuse > 0:
+                cost[usage[ci] >= max_reuse] = np.inf
+            cost[~np.isfinite(cd)] = np.inf
+            if jitter is not None:
+                cost += jitter[i]
+            j = int(np.argmin(cost))
+            if np.isfinite(cost[j]):
+                chosen = int(ci[j])
+                picks[i] = chosen
+                dists[i] = float(cd[j])
+                usage[chosen] += 1
+        if chosen < 0:
+            # nothing usable among the candidates (colour radius / reuse cap):
+            # exact, cap-aware pick over the whole library.
+            p, dd = matcher.select_batch(feats[i:i + 1], avgs[i:i + 1])
+            chosen = int(p[0])
+            picks[i] = chosen
+            dists[i] = float(dd[0])
+        g = int(groups[chosen])
+        guse[g] += 1
+        if avoid_adjacent:
+            x0, y0, x1, y1 = obox[i]
+            owner[y0:y1, x0:x1] = g
+    if progress:
+        progress("plan", L, L)
+    return picks, dists
