@@ -1,2 +1,6 @@
+# 核心依赖的权威来源是 pyproject.toml；此文件仅为兼容老的
+# `pip install -r requirements.txt` 流程保留。
 numpy>=1.24
 pillow>=10.0
+# GUI：pip install -e ".[gui]"   (PySide6)
+# 开发：pip install -e ".[dev]"  (pytest, tifffile)
