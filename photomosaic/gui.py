@@ -13,6 +13,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
+import time
+import traceback
 import shutil
 import sys
 import tempfile
@@ -728,6 +731,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._persist = load_settings
         self.setWindowTitle("照片马赛克工作室")
+        # 窗口图标：assets/icon.png（发布资产，存在即用）
+        icon = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "assets", "icon.png")
+        if os.path.exists(icon):
+            self.setWindowIcon(QIcon(icon))
+        self._welcome_shown = False
         self.resize(*self._DEFAULT_SIZE)
         self.setStyleSheet(_build_style())
         self.master_path: Optional[str] = None
@@ -833,12 +842,43 @@ class MainWindow(QMainWindow):
                 pass
         super().closeEvent(ev)
 
+    # ---- first-run welcome -------------------------------------------------
+    def _maybe_show_welcome(self) -> None:
+        """首次启动（无存档或未看过）弹一次性欢迎指引（非模态）。"""
+        if self._welcome_shown:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("欢迎使用照片马赛克工作室")
+        dlg.setModal(True)
+        lay = QVBoxLayout(dlg)
+        lbl = QLabel(
+            "<h3>四步拼出你的马赛克</h3>"
+            "<p>① 打开主图：选一张要做成马赛克的大图。<br>"
+            "② 构建单元图库：把你的照片文件夹加进来，建一次库以后随便换主图。<br>"
+            "③ 网格与细节：调整格子粗细，圈出想细化的区域（Ctrl+拖拽套索）。<br>"
+            "④ 生成与修正：点生成；超大输出会自动用流式渲染不爆内存。</p>"
+            "<p>设置会被自动记住；关闭再次打开会从上次的断点继续。</p>")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        from PySide6.QtWidgets import QCheckBox, QDialogButtonBox
+        cb = QCheckBox("不再显示")
+        cb.setChecked(True)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(cb)
+        lay.addWidget(btns)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.open()   # 非模态：真实 GUI 不卡界面，离屏测试不被阻塞
+        self._welcome_shown = True   # 只弹一次；勾选框默认勾上，保持语义
+
     def showEvent(self, ev) -> None:
         super().showEvent(ev)
         if not self._splitter3_initialized:
             self._splitter3_initialized = True
             # 布局尚未激活：推迟到事件循环下一拍再应用分栏比例
             QTimer.singleShot(0, self._init_splitter3)
+        # 欢迎只弹一次（判断是否已看过在方法内做）
+        QTimer.singleShot(100, self._maybe_show_welcome)
 
     def _init_splitter3(self) -> None:
         """首次显示后应用第③页分栏：优先恢复存档状态，否则初始比例 3:1。"""
@@ -931,6 +971,7 @@ class MainWindow(QMainWindow):
         if not geo.isValid():
             geo = self.geometry()
         return {
+            "welcome_shown": self._welcome_shown,
             "master": self.master_path,
             "master_rot": self.master_rot,
             "db": self.db_edit.text(),
@@ -966,6 +1007,7 @@ class MainWindow(QMainWindow):
 
     def _apply_state(self, d: dict) -> None:
         self._user_touched_cells = True
+        self._welcome_shown = bool(d.get("welcome_shown", False))
         if d.get("folders"):
             self.folder_list.clear()
             for f in d["folders"]:
@@ -2147,9 +2189,40 @@ class MainWindow(QMainWindow):
                 self.db_edit.setText(os.path.join(os.path.dirname(master), "tiles.db"))
 
 
+_ERROR_LOG = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+    "photomosaic-studio", "error.log")
+
+
+def _install_excepthook() -> None:
+    """全局崩溃兜底：未处理异常先写 error.log，再用 QTimer 异步弹中文提示。
+
+    对话框不能直接在 hook 里模态弹——hook 可能在非 GUI 线程被触发；
+    而且模态会卡死离屏测试。写日志是同步的，弹窗延后到事件循环下一拍。"""
+    def hook(etype, value, tb):
+        text = "".join(traceback.format_exception(etype, value, tb))
+        try:
+            os.makedirs(os.path.dirname(_ERROR_LOG), exist_ok=True)
+            with open(_ERROR_LOG, "a", encoding="utf-8") as fh:
+                fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}\n")
+        except Exception:
+            pass
+        def _popup():
+            try:
+                if QApplication.instance():
+                    QMessageBox.critical(
+                        None, "出现未处理的错误",
+                        f"{etype.__name__}: {value}\n\n已记录到 {_ERROR_LOG}")
+            except Exception:
+                pass
+        QTimer.singleShot(0, _popup) if QApplication.instance() else None
+    sys.excepthook = hook
+
+
 def run_gui(argv: Optional[List[str]] = None, master: Optional[str] = None,
             db: Optional[str] = None, folder: Optional[str] = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv[1:])
+    _install_excepthook()
     win = MainWindow()
     win.prefill(master=master, db=db, folder=folder)
     win.show()

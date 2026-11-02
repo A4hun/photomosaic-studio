@@ -41,7 +41,10 @@ def resolve_backend(device: str = "auto") -> Tuple[object, str, object]:
                 return _BACKENDS[device]
         except Exception:
             if device == "gpu":
-                raise
+                raise RuntimeError(
+                    "未检测到 CuPy（GPU 匹配后端）。"
+                    "请改用 --device cpu，或安装 cupy-cuda12x 等与本机 CUDA 匹配的包。"
+                ) from None
     _BACKENDS[device] = (np, "cpu", lambda a: a)
     return _BACKENDS[device]
 
