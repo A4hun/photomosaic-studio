@@ -1727,14 +1727,15 @@ class MainWindow(QMainWindow):
             "每个碎片贴出来占多少像素，直接决定成品清晰度与总尺寸：\n"
             "输出宽度 = 横向基础块数 × 每格像素。\n"
             "256px=库里缩略图的清晰度；512px 会重新读取原照片，细节最实；\n"
-            "超过原片尺寸的部分只是放大，文件更大但不会更清晰。")
+            "超过原片尺寸的部分只是放大，文件更大但不会更清晰。\n"
+            "选「自定义…」后直接在右边数字框输入任意值。")
         row2.addWidget(self.cell_px_combo)
         self.cell_px_spin = QSpinBox()
         self.cell_px_spin.setRange(8, 8192)
         self.cell_px_spin.setValue(256)
         self.cell_px_spin.setSuffix(" px/格")
-        self.cell_px_spin.setEnabled(False)          # 仅“自定义…”时可编辑
-        self.cell_px_spin.setToolTip("每个碎片占的像素数。")
+        self.cell_px_spin.setEnabled(False)          # 仅"自定义…"时可编辑
+        self.cell_px_spin.setToolTip("每个碎片占的像素数。选「自定义…」后可改。")
         row2.addWidget(self.cell_px_spin)
         row2.addStretch(1)
         self.cell_px_combo.currentIndexChanged.connect(self._on_cell_px_mode)
@@ -1793,13 +1794,15 @@ class MainWindow(QMainWindow):
         self.out_quality = QSpinBox()
         self.out_quality.setRange(30, 100)
         self.out_quality.setValue(100)
-        erow.addWidget(QLabel("质量"))
+        self.out_quality.setToolTip("仅 JPEG 有效：100=无损级（文件大），90=肉眼难辨（文件小）。")
+        erow.addWidget(QLabel("导出质量"))
         erow.addWidget(self.out_quality)
         bexp = QPushButton("导出…")
         bexp.clicked.connect(self._export)
         erow.addWidget(bexp)
-        for text, c, r in (("海报分页 3×2", 3, 2), ("海报分页 2×3", 2, 3)):
+        for text, c, r in (("分页打印 3×2（6 张）", 3, 2), ("分页打印 2×3（6 张）", 2, 3)):
             bp = QPushButton(text)
+            bp.setToolTip("把成品切成 6 张分别打印，拼起来就是大幅海报（适合 A4 打印机）。")
             bp.clicked.connect(lambda _=False, cc=c, rr=r: self._poster(cc, rr))
             erow.addWidget(bp)
         erow.addStretch(1)
@@ -1890,12 +1893,24 @@ class MainWindow(QMainWindow):
             oh = int(round(H * ow / W))
             head = (f"→ 每格 {cp}px × {cells} 列：输出 {ow}×{oh} px"
                     f"（{ow * oh / 1e6:.1f} 百万像素）")
-        note = ""
-        # 阈值与 render.make_mosaic 的流式切换默认值共用同一常量，避免两处失同步
-        if ow * oh > STREAM_THRESHOLD_PX:
-            note = "  ⟳ 超过 2 亿像素：将用分块流式渲染，输出 BigTIFF"
-        warn = "  ⚠ 很大，生成较慢" if (ow * oh / 1e6 > 150 and not note) else ""
-        self.out_info.setText(head + warn + note)
+        # 预估文件大小（流式 BigTIFF 无压缩 = 精确值；PNG/JPEG 给量级估算）
+        px = ow * oh
+        if px > STREAM_THRESHOLD_PX:
+            size_gb = (px * 3 + 1024) / 1e9    # 无压缩 BigTIFF + 头
+            size_txt = f"，预估文件 ≈{size_gb:.1f} GB"
+            note = f"  ⟳ 超 2 亿像素：自动流式渲染输出 BigTIFF（可续传）"
+            warn = ""
+        elif px > 150e6:
+            size_mb = px * 3 / 1e6 * 0.3        # PNG 照片类约 3:1 压缩
+            size_txt = f"，预估文件 ≈{size_mb:.0f} MB"
+            note = ""
+            warn = "  ⚠ 很大，生成较慢"
+        else:
+            size_mb = px * 3 / 1e6 * 0.3
+            size_txt = f"，预估 ≈{size_mb:.0f} MB" if size_mb >= 1 else ""
+            note = ""
+            warn = ""
+        self.out_info.setText(head + size_txt + warn + note)
 
     def _pick_outdir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择默认保存文件夹")
