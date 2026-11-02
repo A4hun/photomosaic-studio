@@ -376,16 +376,18 @@ class QuadTree:
         return True
 
     def merge_level(self, level: int) -> int:
-        """Collapse every fully-leaf sibling group whose children are at `level`."""
+        """收起所有层级 >= `level` 的细分；返回被合并的父块数。
+
+        旧实现只收"四个兄弟恰好全是 level 级叶子"的父块——层级混排
+        （同一块里 3 级、4 级、5 级并存）时几乎一个都匹配不到，等于无效。
+        现语义：所有 level == level-1 且有子节点的块整体收回（级联清掉其下
+        所有更深细分）。不影响 max_level，后续仍可重新细分。"""
+        level = max(2, int(level))
         merged = 0
         for p in list(self._internal_nodes()):
-            if (
-                p.children
-                and p.children[0].level == level
-                and all(c.is_leaf for c in p.children)
-            ):
+            if p.children is not None and p.level == level - 1:
                 p.children = None
-                merged += 4
+                merged += 1
         return merged
 
     def _internal_nodes(self) -> List[Node]:

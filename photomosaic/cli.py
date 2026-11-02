@@ -83,8 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="override output tile size in px")
     common_match.add_argument("--levels", type=int, default=1,
                               help="adaptive subdivision depth, 1 = uniform grid (default 1)")
-    common_match.add_argument("--detail-threshold", type=float, default=12.0,
-                              help="detail energy above which a cell is split (default 12)")
+    common_match.add_argument("--detail-threshold", type=float, default=25.0,
+                              help="detail energy above which a cell is split "
+                                   "(default 25, gradient+contrast metric)")
     common_match.add_argument("--region", action="append", type=_parse_region, default=None,
                               metavar="X0,Y0,X1,Y1[@LEVEL]",
                               help="force subdivision level inside a pixel rect (repeatable)")

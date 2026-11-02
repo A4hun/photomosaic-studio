@@ -37,9 +37,26 @@ def test_merge_level_collapses_only_that_level():
     t.split_at(32, 32)      # creates level-2 leaves in first base cell
     t.split_at(200, 200)    # level-2 in last base cell
     merged = t.merge_level(2)
-    assert merged == 8
+    assert merged == 2      # 语义改为"被合并的父块数"（每块四子叶）
     assert all(lvl == 1 for _b, lvl in t.leaf_boxes())
     assert len(t.leaves()) == 16
+
+
+def test_merge_level_mixed_depths():
+    """回归：层级混排时"合并全部 N 级"必须有效（此前只收齐整四兄弟）。"""
+    t = QuadTree(256, 256, 4, 4, max_level=4, min_px=1)
+    # 左上块细分到 4 级（混排 2/3/4 级），右上块只到 2 级
+    t.refine_region((0, 0, 64, 64), 4)
+    t.split_at(128, 32)     # 右上基础块到 2 级
+    hist_before = {l for _b, l in t.leaf_boxes()}
+    assert max(hist_before) >= 4
+    merged = t.merge_level(3)          # 收掉 3 级及以上 → 只剩 1/2 级
+    assert merged >= 1
+    levels = [l for _b, l in t.leaf_boxes()]
+    assert max(levels) == 2            # 3/4 级全消失
+    assert min(levels) >= 1
+    assert np.all(_coverage(t, 256, 256) == 1)
+    assert t.max_level == 4            # 上限不变，后续仍可细分
 
 
 def test_reset():

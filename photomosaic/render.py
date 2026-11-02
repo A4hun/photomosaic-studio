@@ -75,22 +75,25 @@ def rect_features(master_rgb: Image.Image, box: Box) -> Tuple[np.ndarray, np.nda
 
 
 def detail_energy(master_rgb: Image.Image, box: Box, sample: int = 32) -> float:
-    """Local detail metric: mean absolute luminance gradient inside the box."""
+    """局部细节度量：亮度梯度均值 + 0.4×亮度标准差。
+
+    与 DetailMap 同口径（噪点不误切、真实边缘可靠细分）。sample 是
+    中间降采样分辨率，越小越平、越大越敏感。"""
     region = master_rgb.crop(box).convert("L").resize(
         (sample, sample), Image.Resampling.BOX
     )
     a = np.asarray(region, dtype=np.float32)
     gx = np.abs(np.diff(a, axis=1)).mean()
     gy = np.abs(np.diff(a, axis=0)).mean()
-    return float(gx + gy)
+    return float(gx + gy + 0.4 * a.std())
 
 
 class DetailMap:
-    """Gradient-magnitude integral image: O(1) mean detail energy per rect.
+    """细节能量积分图：O(1) 计算任意矩形的细节分。
 
-    Built once per master (down-scaled so the longest side is <= `max_dim`);
-    replaces the per-rect crop+resize of `detail_energy` during quadtree
-    refinement, making live preview and large renders cheap.
+    度量 = 亮度梯度均值 + 0.4 × 亮度标准差（三通道积分图：梯度幅值、
+    亮度、亮度²）。相比纯梯度均值：噪点区（梯度虚高、std 低）不再误切，
+    真实边缘/纹理（双高）被可靠细分。降采样到 ≤max_dim 保持大图可算。
     """
 
     def __init__(self, master: Image.Image, max_dim: int = 512):
@@ -103,8 +106,10 @@ class DetailMap:
         g[:, :-1] += np.abs(np.diff(a, axis=1))
         g[:-1, :] += np.abs(np.diff(a, axis=0))
         self.hh, self.hw = g.shape
-        self.I = np.zeros((self.hh + 1, self.hw + 1), dtype=np.float64)
-        np.cumsum(np.cumsum(g, axis=0), axis=1, out=self.I[1:, 1:])
+        # 三通道：梯度幅值和、亮度和、亮度平方和
+        self.I = np.zeros((self.hh + 1, self.hw + 1, 3), dtype=np.float64)
+        chans = np.stack([g, a, a * a], axis=2)
+        np.cumsum(np.cumsum(chans, axis=0), axis=1, out=self.I[1:, 1:])
         self.sx = W / self.hw
         self.sy = H / self.hh
 
@@ -119,15 +124,19 @@ class DetailMap:
         return out
 
     def energies(self, boxes) -> np.ndarray:
-        """Mean gradient energy for each (x0,y0,x1,y1) rect, vectorised."""
+        """每矩形的细节分 = 梯度均值 + 0.4×亮度std，向量化。"""
         b = np.asarray(boxes, dtype=np.float64)
         if b.ndim == 1:
             b = b[None, :]
         c = self._map(b)
         x0, y0, x1, y1 = c[:, 0], c[:, 1], c[:, 2], c[:, 3]
-        sums = self.I[y1, x1] - self.I[y0, x1] - self.I[y1, x0] + self.I[y0, x0]
-        areas = (x1 - x0) * (y1 - y0)
-        return sums / np.maximum(areas, 1)
+        sums = (self.I[y1, x1] - self.I[y0, x1] - self.I[y1, x0] + self.I[y0, x0])
+        areas = np.maximum((x1 - x0) * (y1 - y0), 1)
+        grad_mean = sums[:, 0] / areas
+        lum_mean = sums[:, 1] / areas
+        lum_sq_mean = sums[:, 2] / areas
+        lum_std = np.sqrt(np.maximum(lum_sq_mean - lum_mean * lum_mean, 0.0))
+        return grad_mean + 0.4 * lum_std
 
     def energy(self, box: Box) -> float:
         return float(self.energies(np.asarray(box))[0])
@@ -486,7 +495,7 @@ def make_mosaic(
     seed: Optional[int] = None,
     jpeg_quality: int = 100,
     levels: int = 1,
-    detail_threshold: float = 12.0,
+    detail_threshold: float = 25.0,
     regions=None,
     leaf_boxes=None,
     blend: float = 0.0,

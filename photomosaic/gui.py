@@ -1026,7 +1026,7 @@ class MainWindow(QMainWindow):
         if 1 <= lvl <= len(self.level_radios):
             self.level_radios[lvl - 1].setChecked(True)
         self.auto_check.setChecked(bool(d.get("auto", True)))
-        self.threshold_spin.setValue(float(d.get("threshold", 12.0)))
+        self.threshold_spin.setValue(float(d.get("threshold", 25.0)))
         self.topk_spin.setValue(int(d.get("top_k", 8)))
         self.reuse_spin.setValue(int(d.get("max_reuse", 0)))
         self.radius_spin.setValue(float(d.get("radius", 0.0)))
@@ -1541,7 +1541,7 @@ class MainWindow(QMainWindow):
         g2l.addWidget(_hint("勾选后层级上限=所选单选；选「一级」即为经典均匀网格，不再细分。"))
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(0.0, 200.0)
-        self.threshold_spin.setValue(12.0)
+        self.threshold_spin.setValue(25.0)
         self.threshold_spin.setToolTip("细节能量超过该值才细分。越大越保守，越小越激进。")
         f2 = QFormLayout()
         f2.addRow("细节阈值", self.threshold_spin)
@@ -1634,7 +1634,9 @@ class MainWindow(QMainWindow):
         if self.tree:
             n = self.tree.merge_level(level)
             self._refresh_grid_overlay()
-            self.status_text.setText(f"已合并 {n} 个 {level} 级元素")
+            self.status_text.setText(
+                f"已收回 {n} 个块的细分（{level} 级及以上全部合并）"
+                if n else f"没有 {level} 级及以上的细分可合并")
 
     def _update_grid_info(self) -> None:
         self._refresh_grid_overlay()
