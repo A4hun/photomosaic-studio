@@ -108,6 +108,17 @@ def _shrinkable(lbl: QLabel, wrap: bool = False) -> QLabel:
     return lbl
 
 
+def _safe_num(d: dict, key: str, default, cast):
+    """存档数值安全读取：脏数据/错类型回退默认，绝不抛异常。
+
+    旧版把整段恢复包在一个 try 里——一个坏键会炸掉后面所有设置的恢复。
+    """
+    try:
+        return cast(d.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _page(title: str, subtitle: str, body: QWidget) -> QWidget:
     """Standard page chrome: big title + one-line subtitle + content."""
     w = QWidget()
@@ -1002,6 +1013,11 @@ class MainWindow(QMainWindow):
             "first_level": self.first_level_check.isChecked(),
             "skip_white": self.skip_white_check.isChecked(),
             "skip_black": self.skip_black_check.isChecked(),
+            # 结果页的查看/导出选项：用户天天调，必须记忆
+            "zoom": self.zoom_combo.currentText(),
+            "format": self.format_combo.currentText(),
+            "out_quality": self.out_quality.value(),
+            "page": self.pages.currentIndex(),
             "tree_leaves": [list(b) + [l] for b, l in (
                 self.tree.leaf_boxes() if self.tree else [])],
             # 窗口几何（[x, y, w, h]）与最大化状态；第③页分栏 base64 状态
@@ -1021,26 +1037,27 @@ class MainWindow(QMainWindow):
             self.db_edit.setText(d["db"])
         for name in self.variant_checks:
             self.variant_checks[name].setChecked(name in (d.get("variants") or ["orig"]))
-        self.thumb_spin.setValue(int(d.get("thumb", 256)))
+        self.thumb_spin.setValue(_safe_num(d, "thumb", 256, int))
         self.dedup_check.setChecked(bool(d.get("dedup", True)))
         self.subfolder_check.setChecked(bool(d.get("subfolders", True)))
-        self.cell_quality_spin.setValue(int(d.get("cell_quality", 100)))
-        self.workers_spin.setValue(int(d.get("workers", 0)))
-        self.cells_x_spin.setValue(int(d.get("cells_x", 100)))
-        lvl = int(d.get("level", 3))
+        self.cell_quality_spin.setValue(_safe_num(d, "cell_quality", 100, int))
+        self.workers_spin.setValue(_safe_num(d, "workers", 0, int))
+        self.cells_x_spin.setValue(_safe_num(d, "cells_x", 100, int))
+        lvl = _safe_num(d, "level", 3, int)
         if 1 <= lvl <= len(self.level_radios):
             self.level_radios[lvl - 1].setChecked(True)
         self.auto_check.setChecked(bool(d.get("auto", True)))
-        self.threshold_slider.setValue(int(round(float(d.get("threshold", 25.0)))))
-        self.topk_spin.setValue(int(d.get("top_k", 8)))
-        self.reuse_spin.setValue(int(d.get("max_reuse", 0)))
-        self.radius_spin.setValue(float(d.get("radius", 0.0)))
-        self.blend_slider.setValue(int(d.get("blend", 55)))
-        self.seed_spin.setValue(int(d.get("seed", -1)))
+        self.threshold_slider.setValue(_safe_num(d, "threshold", 25, lambda v: int(round(float(v)))))
+        self.topk_spin.setValue(_safe_num(d, "top_k", 8, int))
+        self.reuse_spin.setValue(_safe_num(d, "max_reuse", 0, int))
+        self.radius_spin.setValue(_safe_num(d, "radius", 0.0, float))
+        self.blend_slider.setValue(_safe_num(d, "blend", 55, int))
+        self.seed_spin.setValue(_safe_num(d, "seed", -1, int))
         # 输出清晰度：新版存 cell_px；旧版只有 out_width → 按块数换算迁移
-        cp = int(d.get("cell_px", 0) or 0)
+        cp = _safe_num(d, "cell_px", 0, int) or 0
         if not cp and d.get("out_width"):
-            cp = max(1, round(int(d["out_width"]) / max(1, int(d.get("cells_x", 100)))))
+            cp = max(1, round(_safe_num(d, "out_width", 0, int)
+                              / max(1, _safe_num(d, "cells_x", 100, int))))
         self._set_cell_px(cp)
         self.outdir_edit.setText(str(d.get("out_dir", "") or ""))
         dev = d.get("device", "auto")
@@ -1050,15 +1067,31 @@ class MainWindow(QMainWindow):
         self.first_level_check.setChecked(bool(d.get("first_level", False)))
         self.skip_white_check.setChecked(bool(d.get("skip_white", False)))
         self.skip_black_check.setChecked(bool(d.get("skip_black", False)))
+        # 结果页查看/导出选项（旧版存档没有 → 保持默认）
+        z = self.zoom_combo.findText(str(d.get("zoom", "")))
+        if z >= 0:
+            self.zoom_combo.setCurrentIndex(z)
+        fi = self.format_combo.findText(str(d.get("format", "")))
+        if fi >= 0:
+            self.format_combo.setCurrentIndex(fi)
+        self.out_quality.setValue(_safe_num(d, "out_quality", 100, int))
+        # 主图/网格恢复依赖磁盘文件：单独容错，失败不影响其余设置
         if d.get("master") and os.path.exists(d["master"]):
-            self.master_path = d["master"]
-            self.master_rot = int(d.get("master_rot", 0))
-            self._show_master()
-            self._restore_tree(d.get("tree_leaves"))
-            self.btn_render.setEnabled(True)
+            try:
+                self.master_path = d["master"]
+                self.master_rot = int(d.get("master_rot", 0))
+                self._show_master()
+                self._restore_tree(d.get("tree_leaves"))
+                self.btn_render.setEnabled(True)
+            except Exception:
+                pass                    # 主图被移动/删除：其余设置照常恢复
         # 窗口几何/最大化与第③页分栏：旧版存档没有这些键 → 保持默认
         self._restore_geometry(d)
         self._restore_splitter3(d)
+        # 最后恢复当前页（覆盖启动默认页）
+        pg = d.get("page")
+        if isinstance(pg, int) and 0 <= pg < self.pages.count():
+            self._goto(pg)
 
     def _restore_tree(self, leaves) -> None:
         pix = self._master_pixmap()
