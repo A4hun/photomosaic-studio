@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import List, Optional
 
@@ -153,6 +154,24 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--master", default=None, help="pre-load this master image")
     pg.add_argument("--db", default=None, help="pre-load this tile database")
     pg.add_argument("--folder", default=None, help="pre-fill this tile folder")
+
+    pb = sub.add_parser("batch", help="批量出图：多张主图 × 多种风格，库只加载一次")
+    pb.add_argument("masters", help="主图文件夹（递归扫描）")
+    pb.add_argument("--db", required=True, help="SQLite tile database path")
+    pb.add_argument("--outdir", required=True, help="输出目录")
+    pb.add_argument("--styles", default="grid",
+                    help="逗号分隔风格：grid,brick,hex,dot（默认 grid）")
+    pb.add_argument("--no-recursive", action="store_true")
+    pb.add_argument("--no-auto-adapt", action="store_true",
+                    help="关闭按主图内容的智能参数适配（用统一参数）")
+    pb.add_argument("--overwrite", action="store_true",
+                    help="覆盖已存在的输出（默认跳过=断点续批）")
+    pb.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
+    pb.add_argument("--cells-x", type=int, default=None)
+    pb.add_argument("--levels", type=int, default=4)
+    pb.add_argument("--blend", type=float, default=0.55)
+    pb.add_argument("--top-k", type=int, default=8)
+    pb.add_argument("--seed", type=int, default=None)
     return p
 
 
@@ -230,6 +249,38 @@ def main(argv: Optional[List[str]] = None) -> int:
                 pass  # in-memory by default via TileDB(None)
         _print_stats(stats)
         return 0
+
+    if args.command == "batch":
+        from .batch import BatchRunner, scan_masters
+
+        masters = scan_masters(args.masters, recursive=not args.no_recursive)
+        if not masters:
+            print(f"未在 {args.masters} 找到主图", file=sys.stderr)
+            return 2
+        styles = [s.strip() for s in args.styles.split(",") if s.strip()]
+        base_params = {"levels": args.levels, "blend": args.blend,
+                       "top_k": args.top_k, "seed": args.seed}
+        if args.cells_x:
+            base_params["cells_x"] = args.cells_x
+
+        def on_progress(done, total, path):
+            print(f"[{done}/{total}] {os.path.basename(path)}")
+
+        with BatchRunner(args.db, device=args.device) as runner:
+            print(f"瓦片库 {runner.n_tiles} 张（常驻），共 {len(masters)} 张主图 "
+                  f"× {len(styles)} 种风格 = {len(masters) * len(styles)} 张成品")
+            stats = runner.run(
+                masters, args.outdir, styles=styles,
+                auto_adapt=not args.no_auto_adapt, overwrite=args.overwrite,
+                base_params=base_params, progress=on_progress)
+        print(f"\n完成 {stats['ok']}/{stats['total']} 张"
+              f"（跳过 {stats['skipped']}，失败 {stats['failed']}），"
+              f"耗时 {stats['seconds']}s → {stats['out_dir']}")
+        if stats["errors"]:
+            print("失败明细：", file=sys.stderr)
+            for e in stats["errors"]:
+                print("  " + e, file=sys.stderr)
+        return 0 if stats["failed"] == 0 else 1
 
     if args.command == "gui":
         from .gui import run_gui

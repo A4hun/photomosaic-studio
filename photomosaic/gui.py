@@ -814,7 +814,8 @@ class MainWindow(QMainWindow):
         sl.addWidget(title)
         sl.addWidget(sub)
         self.step_buttons: List[QPushButton] = []
-        for i, name in enumerate(["① 主图像", "② 单元图数据库", "③ 网格与嵌套层级", "④ 生成与修正"]):
+        for i, name in enumerate(["① 主图像", "② 单元图数据库", "③ 网格与嵌套层级",
+                                  "④ 生成与修正", "⑤ 批量出图"]):
             b = QPushButton(name)
             b.setProperty("active", i == 0)
             b.clicked.connect(lambda _=False, idx=i: self._goto(idx))
@@ -829,6 +830,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._page_library())
         self.pages.addWidget(self._page_grid())
         self.pages.addWidget(self._page_result())
+        self.pages.addWidget(self._page_batch())
         hbox.addWidget(self.pages, 1)
         self.setCentralWidget(central)
 
@@ -1914,6 +1916,150 @@ class MainWindow(QMainWindow):
         # 与②③页一致地包进滚动区：窄/矮窗口下控件可滚到，不被裁剪
         return _page("生成与修正", "渲染马赛克；点击任意碎片可从候选列表替换，完成后导出。",
                      _scrollable(w, h_scroll=True))
+
+    # ---- page 5: batch -------------------------------------------------
+    def _page_batch(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        g1 = QGroupBox("主图（多张，各自出一张成品）")
+        g1l = QVBoxLayout(g1)
+        self.batch_master_list = QListWidget()
+        self.batch_master_list.setMaximumHeight(140)
+        g1l.addWidget(self.batch_master_list)
+        mrow = QHBoxLayout()
+        badd = QPushButton("添加主图…")
+        badd.clicked.connect(self._batch_add_masters)
+        mrow.addWidget(badd)
+        bfolder = QPushButton("添加文件夹…")
+        bfolder.clicked.connect(self._batch_add_folder)
+        mrow.addWidget(bfolder)
+        bclear = QPushButton("清空")
+        bclear.clicked.connect(self.batch_master_list.clear)
+        mrow.addWidget(bclear)
+        mrow.addStretch(1)
+        g1l.addLayout(mrow)
+        lay.addWidget(g1)
+
+        g2 = QGroupBox("风格（每张主图按所选风格各出一张）")
+        g2l = QHBoxLayout(g2)
+        self.batch_style_checks: Dict[str, object] = {}
+        from .styles import all_styles
+        for name, label in all_styles():
+            cb = QCheckBox(label)
+            cb.setChecked(name == "grid")
+            cb.setToolTip(f"风格：{label}")
+            self.batch_style_checks[name] = cb
+            g2l.addWidget(cb)
+        g2l.addStretch(1)
+        lay.addWidget(g2)
+
+        g3 = QGroupBox("参数")
+        g3l = QFormLayout(g3)
+        self.batch_auto_adapt = QCheckBox("按每张主图内容智能适配参数（推荐）")
+        self.batch_auto_adapt.setChecked(True)
+        self.batch_auto_adapt.setToolTip(
+            "勾选：逐张主图分析内容，自动推荐格子粗细/细分层级/融合强度等；\n"
+            "不勾：所有主图用当前③④页的同一套参数。")
+        g3l.addRow(self.batch_auto_adapt)
+        orow = QHBoxLayout()
+        orow.addWidget(QLabel("输出目录"))
+        self.batch_outdir_edit = QLineEdit()
+        self.batch_outdir_edit.setPlaceholderText("未设置：存到主图各自所在文件夹")
+        orow.addWidget(self.batch_outdir_edit, 1)
+        bdir = QPushButton("浏览…")
+        bdir.clicked.connect(self._batch_pick_outdir)
+        orow.addWidget(bdir)
+        g3l.addRow(orow)
+        lay.addWidget(g3)
+
+        rrow = QHBoxLayout()
+        self.btn_batch = QPushButton("开始批量出图")
+        self.btn_batch.setObjectName("primary")
+        self.btn_batch.clicked.connect(self._run_batch)
+        rrow.addWidget(self.btn_batch)
+        self.btn_batch_cancel = QPushButton("取消")
+        self.btn_batch_cancel.setEnabled(False)
+        rrow.addWidget(self.btn_batch_cancel)
+        rrow.addStretch(1)
+        lay.addLayout(rrow)
+
+        self.batch_log = QTextEdit()
+        self.batch_log.setReadOnly(True)
+        self.batch_log.setMaximumHeight(180)
+        self.batch_log.setPlaceholderText("批量任务进度与结果会显示在这里。")
+        lay.addWidget(self.batch_log)
+        lay.addStretch(1)
+        return _page("批量出图", "多张主图 × 多种风格一次出齐；库只加载一次，超大库不重复加载。",
+                     _scrollable(w, h_scroll=True))
+
+    # ---- batch ---------------------------------------------------------
+    def _batch_add_masters(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择主图（可多选）", "",
+            "图片 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)")
+        for p in paths:
+            if not self.batch_master_list.findItems(p, Qt.MatchFlag.MatchExactly):
+                self.batch_master_list.addItem(p)
+
+    def _batch_add_folder(self) -> None:
+        from .batch import scan_masters
+        folder = QFileDialog.getExistingDirectory(self, "选择主图文件夹")
+        if folder:
+            for p in scan_masters(folder):
+                if not self.batch_master_list.findItems(p, Qt.MatchFlag.MatchExactly):
+                    self.batch_master_list.addItem(p)
+
+    def _batch_pick_outdir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择批量输出目录")
+        if path:
+            self.batch_outdir_edit.setText(path)
+
+    def _run_batch(self) -> None:
+        from .batch import BatchRunner
+        n = self.batch_master_list.count()
+        if n == 0:
+            QMessageBox.warning(self, "批量出图", "请先添加主图。")
+            return
+        db_path = self._db_path()
+        if not os.path.exists(db_path):
+            QMessageBox.warning(self, "批量出图", "请先在步骤②构建单元图数据库。")
+            return
+        masters = [self.batch_master_list.item(i).text() for i in range(n)]
+        styles = [name for name, cb in self.batch_style_checks.items()
+                  if cb.isChecked()]
+        if not styles:
+            QMessageBox.warning(self, "批量出图", "请至少勾选一种风格。")
+            return
+        out_dir = self.batch_outdir_edit.text().strip()
+        if not out_dir:
+            out_dir = os.path.dirname(masters[0])
+        auto = self.batch_auto_adapt.isChecked()
+
+        def fn(progress, message):
+            with BatchRunner(db_path, device=self.device_combo.currentText()) as runner:
+                self.batch_log.append(
+                    f"库 {runner.n_tiles} 张已常驻，共 {n}×{len(styles)}={n * len(styles)} 张")
+                stats = runner.run(
+                    masters, out_dir, styles=styles, auto_adapt=auto,
+                    progress=lambda d, t, p: progress(d, t),
+                    status=lambda m: message(m))
+            return stats
+
+        def on_done(stats):
+            self._set_busy(False)
+            self.btn_batch_cancel.setEnabled(False)
+            if isinstance(stats, dict) and "ok" in stats:
+                self.batch_log.append(
+                    f"完成 {stats['ok']}/{stats['total']}（跳过 {stats['skipped']}，"
+                    f"失败 {stats['failed']}），耗时 {stats['seconds']}s")
+                for e in stats.get("errors", []):
+                    self.batch_log.append("  失败: " + e)
+                self.status_text.setText(f"批量完成 → {stats.get('out_dir')}")
+
+        self.btn_batch_cancel.setEnabled(True)
+        self.batch_log.clear()
+        self._start(fn, on_done)
 
     # ---- render & correct ---------------------------------------------------
     def _effective_master(self) -> Optional[str]:

@@ -1,0 +1,101 @@
+"""智能适配（tuning）与批量矩阵（batch）。"""
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from photomosaic.db import TileDB
+from photomosaic.library import ingest
+from photomosaic.tuning import analyze_master, recommend_params
+
+
+def _photo(seed=0, w=400, h=300):
+    return Image.fromarray(np.random.default_rng(0).integers(
+        0, 255, (h, w, 3), dtype=np.uint8))
+
+
+def _flat():
+    return Image.new("RGB", (400, 300), (200, 200, 200))
+
+
+def test_analyze_master_features():
+    f = analyze_master(_photo())
+    for k in ("width", "height", "aspect", "detail_mean", "detail_p90",
+              "subject_ratio", "color_entropy", "bright_ratio", "dark_ratio"):
+        assert k in f, f"缺特征 {k}"
+    assert f["width"] == 400 and f["height"] == 300
+
+
+def test_recommend_differs_by_content():
+    """平滑图与细节图应得到不同推荐（智能适配，非统一模板）。"""
+    smooth = recommend_params(_flat())
+    busy = recommend_params(_photo())
+    # 色彩单调的平滑图 → 融合应更强；细节图 → 格子更多或层级更深
+    assert smooth["blend"] >= busy["blend"]
+    assert (busy["cells_x"] >= smooth["cells_x"]
+            or busy["levels"] >= smooth["levels"])
+    assert smooth["reasons"] and busy["reasons"]
+
+
+def test_recommend_returns_make_mosaic_kwargs():
+    rec = recommend_params(_photo())
+    for k in ("cells_x", "levels", "detail_threshold", "top_k", "blend", "signal"):
+        assert k in rec
+    assert rec["signal"] in ("detail", "saliency")
+
+
+@pytest.fixture(scope="module")
+def batch_setup(tmp_path_factory):
+    rng = np.random.default_rng(0)
+    tmp = tmp_path_factory.mktemp("batch")
+    tiles = tmp / "tiles"
+    tiles.mkdir()
+    for i in range(8):
+        Image.fromarray(rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)).save(
+            tiles / f"t{i}.png")
+    db = TileDB(str(tmp / "tiles.db"))
+    ingest(db, str(tiles))
+    db.close()
+    masters = tmp / "masters"
+    masters.mkdir()
+    for i in range(3):
+        Image.fromarray(rng.integers(0, 255, (200, 160, 3), dtype=np.uint8)).save(
+            masters / f"m{i}.png")
+    return str(tmp / "tiles.db"), str(masters), tmp
+
+
+def test_batch_matrix_skips_existing(batch_setup):
+    from photomosaic.batch import BatchRunner, scan_masters
+
+    db_path, masters_dir, tmp = batch_setup
+    masters = scan_masters(masters_dir)
+    assert len(masters) == 3
+    out_dir = str(tmp / "out")
+    with BatchRunner(db_path) as runner:
+        stats = runner.run(masters, out_dir, styles=["grid", "hex"],
+                           auto_adapt=False,
+                           base_params={"levels": 2, "blend": 0.5})
+    assert stats["total"] == 6            # 3 主图 × 2 风格
+    assert stats["ok"] == 6
+    assert stats["failed"] == 0
+    # 重跑：输出已存在 → 全部跳过（断点续批）
+    with BatchRunner(db_path) as runner:
+        stats2 = runner.run(masters, out_dir, styles=["grid", "hex"],
+                            auto_adapt=False,
+                            base_params={"levels": 2, "blend": 0.5})
+    assert stats2["skipped"] == 6 and stats2["ok"] == 0
+
+
+def test_batch_single_failure_does_not_stop_others(batch_setup, tmp_path):
+    from photomosaic.batch import BatchRunner, scan_masters
+
+    db_path, masters_dir, tmp = batch_setup
+    masters = scan_masters(masters_dir)
+    bad = tmp_path / "broken.png"          # 不存在的文件
+    masters = masters + [str(bad)]
+    with BatchRunner(db_path) as runner:
+        stats = runner.run(masters, str(tmp / "out2"), styles=["grid"],
+                           auto_adapt=False, base_params={"levels": 1})
+    assert stats["failed"] == 1            # 坏的那张失败
+    assert stats["ok"] == 3                # 其余 3 张照常出图
+    assert stats["errors"]

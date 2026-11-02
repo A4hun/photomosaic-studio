@@ -525,6 +525,7 @@ def make_mosaic(
     stream_strip_rows: Optional[int] = None,
     style: str = "grid",
     signal: str = "detail",
+    shared_matcher: Optional[Matcher] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[int, int], None]] = None,
     status: Optional[Callable[[str], None]] = None,
@@ -552,8 +553,12 @@ def make_mosaic(
     cells_y = max(1, int(round(H / cell_w)))
 
     tiles = db.load_arrays()
-    matcher = Matcher(tiles, top_k=top_k, radius=radius, max_reuse=max_reuse,
-                      seed=seed, device=device)
+    # 批量场景可共享已建 Matcher（库只加载一次，GPU 特征常驻），由调用方持有
+    if shared_matcher is None:
+        matcher = Matcher(tiles, top_k=top_k, radius=radius, max_reuse=max_reuse,
+                          seed=seed, device=device)
+    else:
+        matcher = shared_matcher
     ids = tiles["ids"]
     metas = tiles["metas"]
     blend_pct = int(round(max(0.0, min(1.0, float(blend))) * 100))
@@ -704,7 +709,8 @@ def make_mosaic(
                 dists[i] = float(ud[j])
             matched = total
             mean_dist = float(np.mean(ud))
-            matcher.release()
+            if shared_matcher is None:      # 共享 Matcher 由调用方持有，不释放
+                matcher.release()
         del feats
 
         # ---- pasting (parallel decode / fit / blend, ordered paste) --------
@@ -842,7 +848,8 @@ def make_mosaic(
             progress=(lambda ph, d, tot: progress(d, tot)) if progress else None,
             check=(lambda: (_ for _ in ()).throw(RenderCancelled("cancelled"))
                    if (should_cancel and should_cancel()) else None))
-        matcher.release()
+        if shared_matcher is None:          # 共享 Matcher 由调用方持有，不释放
+            matcher.release()
         OW_u, OH_u = cells_x * out_px, cells_y * out_px
 
         if OW_u * OH_u > stream_threshold_px:
