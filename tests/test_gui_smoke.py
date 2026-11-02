@@ -195,7 +195,7 @@ def test_out_info_stream_threshold_uses_shared_constant(tmp_path):
 
 
 def test_cell_px_mode_and_width_derivation(tmp_path):
-    """每格像素控件：预设/自定义/与主图同大三种模式与宽度推导。"""
+    """每格像素控件（单框）：预设值/任意值/与主图同大三种模式与宽度推导。"""
     import numpy as np
     from PIL import Image
 
@@ -207,19 +207,15 @@ def test_cell_px_mode_and_width_derivation(tmp_path):
     win._show_master()
     win.cells_x_spin.setValue(125)
 
-    win._set_cell_px(512)                      # 预设档
-    assert win.cell_px_combo.currentIndex() == 4
-    assert not win.cell_px_spin.isEnabled()
+    win._set_cell_px(512)                      # 常用清晰度
+    assert win.cell_px_spin.value() == 512
     assert win._effective_out_width() == 125 * 512
-    assert "每格 512px" in win.out_info.text()
+    assert "输出 64000" in win.out_info.text()
 
-    win.cell_px_combo.setCurrentIndex(6)        # 自定义…
-    win.cell_px_spin.setValue(300)
-    assert win.cell_px_spin.isEnabled()
+    win.cell_px_spin.setValue(300)             # 任意值
     assert win._effective_out_width() == 125 * 300
 
     win._set_cell_px(0)                        # 与主图同大
-    assert win.cell_px_combo.currentIndex() == 0
     assert win._cell_px() is None
     assert win._effective_out_width() is None
     assert "与主图同大" in win.out_info.text()

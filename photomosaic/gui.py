@@ -1709,36 +1709,33 @@ class MainWindow(QMainWindow):
         self.btn_compare.toggled.connect(self._toggle_compare)
         row.addWidget(self.btn_compare)
         row.addStretch(1)
+        lay.addLayout(row)
+
+        # 输出信息独立一行：不和按钮挤，长文本可读
+        info_row = QHBoxLayout()
         self.out_info = QLabel("")
         self.out_info.setObjectName("hint")
-        _shrinkable(self.out_info, wrap=True)   # 长提示换行，不顶住布局
-        row.addWidget(self.out_info, 1)
-        lay.addLayout(row)
+        _shrinkable(self.out_info, wrap=True)
+        info_row.addWidget(self.out_info, 1)
+        lay.addLayout(info_row)
 
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("每格像素"))
-        self.cell_px_combo = QComboBox()
-        self.cell_px_combo.addItems([
-            "与主图同大（快速预览）",
-            "64 px", "128 px", "256 px（缩略图清晰度）",
-            "512 px（原片清晰度）", "1024 px（再放大）",
-            "自定义…"])
-        self.cell_px_combo.setToolTip(
+        self.cell_px_spin = QSpinBox()
+        self.cell_px_spin.setRange(0, 8192)
+        self.cell_px_spin.setValue(0)                # 0 = 与主图同大
+        self.cell_px_spin.setSpecialValueText("与主图同大（快速预览）")
+        self.cell_px_spin.setSuffix(" px/格")
+        self.cell_px_spin.setMinimumWidth(180)
+        self.cell_px_spin.setToolTip(
             "每个碎片贴出来占多少像素，直接决定成品清晰度与总尺寸：\n"
             "输出宽度 = 横向基础块数 × 每格像素。\n"
-            "256px=库里缩略图的清晰度；512px 会重新读取原照片，细节最实；\n"
-            "超过原片尺寸的部分只是放大，文件更大但不会更清晰。\n"
-            "选「自定义…」后直接在右边数字框输入任意值。")
-        row2.addWidget(self.cell_px_combo)
-        self.cell_px_spin = QSpinBox()
-        self.cell_px_spin.setRange(8, 8192)
-        self.cell_px_spin.setValue(256)
-        self.cell_px_spin.setSuffix(" px/格")
-        self.cell_px_spin.setEnabled(False)          # 仅"自定义…"时可编辑
-        self.cell_px_spin.setToolTip("每个碎片占的像素数。选「自定义…」后可改。")
+            "0 = 与主图同大（快速预览）；\n"
+            "256 = 库里缩略图的清晰度；\n"
+            "512 = 重新读取原照片，细节最实；\n"
+            "更大 = 放大（文件更大但不会更清晰）。")
         row2.addWidget(self.cell_px_spin)
         row2.addStretch(1)
-        self.cell_px_combo.currentIndexChanged.connect(self._on_cell_px_mode)
         self.cell_px_spin.valueChanged.connect(lambda _v=0: self._update_out_info())
         self.cells_x_spin.valueChanged.connect(lambda _v=0: self._update_out_info())
         lay.addLayout(row2)
@@ -1838,38 +1835,17 @@ class MainWindow(QMainWindow):
         return (pix.width(), pix.height()) if pix is not None else (0, 0)
 
     # ---- output resolution（以“每格像素”思考，宽度自动推导） ----------------
-    _CELL_PRESET = {1: 64, 2: 128, 3: 256, 4: 512, 5: 1024}
-
-    def _on_cell_px_mode(self, idx: int) -> None:
-        preset = self._CELL_PRESET.get(idx)
-        if preset is not None:
-            self.cell_px_spin.blockSignals(True)
-            self.cell_px_spin.setValue(preset)
-            self.cell_px_spin.blockSignals(False)
-        self.cell_px_spin.setEnabled(idx == 6)       # 6 = 自定义…
-        if idx == 6:
-            self.cell_px_spin.setFocus()
-        self._update_out_info()
-
     def _set_cell_px(self, cp: int) -> None:
-        """恢复设置：0=与主图同大；预设值对应档位；其他=自定义。"""
-        preset_rev = {v: k for k, v in self._CELL_PRESET.items()}
-        idx = 0 if not cp else preset_rev.get(int(cp), 6)
-        self.cell_px_combo.blockSignals(True)
-        self.cell_px_combo.setCurrentIndex(idx)
-        self.cell_px_combo.blockSignals(False)
-        if cp:
-            self.cell_px_spin.blockSignals(True)
-            self.cell_px_spin.setValue(int(cp))
-            self.cell_px_spin.blockSignals(False)
-        self.cell_px_spin.setEnabled(idx == 6)
+        """恢复设置：0=与主图同大；其他=每格像素数。"""
+        self.cell_px_spin.blockSignals(True)
+        self.cell_px_spin.setValue(max(0, int(cp)))
+        self.cell_px_spin.blockSignals(False)
         self._update_out_info()
 
     def _cell_px(self) -> Optional[int]:
         """当前每格像素；None = 与主图同大。"""
-        if self.cell_px_combo.currentIndex() == 0:
-            return None
-        return max(8, self.cell_px_spin.value())
+        v = self.cell_px_spin.value()
+        return v if v > 0 else None
 
     def _effective_out_width(self) -> Optional[int]:
         cp = self._cell_px()
@@ -1886,31 +1862,24 @@ class MainWindow(QMainWindow):
         cp = self._cell_px()
         if cp is None:
             ow, oh = W, H
-            head = (f"→ 与主图同大：{ow}×{oh} px（{ow * oh / 1e6:.1f} 百万像素），"
-                    f"每格仅约 {W / cells:.0f}px")
+            head = f"输出 {ow}×{oh} px（与主图同大）"
         else:
             ow = cells * cp
             oh = int(round(H * ow / W))
-            head = (f"→ 每格 {cp}px × {cells} 列：输出 {ow}×{oh} px"
-                    f"（{ow * oh / 1e6:.1f} 百万像素）")
+            head = f"输出 {ow}×{oh} px"
         # 预估文件大小（流式 BigTIFF 无压缩 = 精确值；PNG/JPEG 给量级估算）
         px = ow * oh
+        mp = px / 1e6
+        parts = [head]
         if px > STREAM_THRESHOLD_PX:
             size_gb = (px * 3 + 1024) / 1e9    # 无压缩 BigTIFF + 头
-            size_txt = f"，预估文件 ≈{size_gb:.1f} GB"
-            note = f"  ⟳ 超 2 亿像素：自动流式渲染输出 BigTIFF（可续传）"
-            warn = ""
+            parts.append(f"{px / 1e6:.0f} 百万像素 · ≈{size_gb:.1f} GB")
+            parts.append("⟳ 流式渲染 BigTIFF（可续传）")
         elif px > 150e6:
-            size_mb = px * 3 / 1e6 * 0.3        # PNG 照片类约 3:1 压缩
-            size_txt = f"，预估文件 ≈{size_mb:.0f} MB"
-            note = ""
-            warn = "  ⚠ 很大，生成较慢"
-        else:
-            size_mb = px * 3 / 1e6 * 0.3
-            size_txt = f"，预估 ≈{size_mb:.0f} MB" if size_mb >= 1 else ""
-            note = ""
-            warn = ""
-        self.out_info.setText(head + size_txt + warn + note)
+            parts.append(f"{mp:.0f} 百万像素 · ≈{px * 3 / 1e6 * 0.3:.0f} MB · 较大，生成较慢")
+        elif px > 1e6:
+            parts.append(f"{mp:.1f} 百万像素 · ≈{px * 3 / 1e6 * 0.3:.0f} MB")
+        self.out_info.setText("  ·  ".join(parts))
 
     def _pick_outdir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择默认保存文件夹")
