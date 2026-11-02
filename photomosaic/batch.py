@@ -115,8 +115,8 @@ class BatchRunner:
                     rec.pop("skip_near_white", None)
                     rec.pop("skip_near_black", None)
                     params.update(rec)
-                else:
-                    params.setdefault("style", style)
+                # 风格必须在参数里（auto_adapt 时 recommend 的 style 已被剔除，这里补回）
+                params["style"] = style
                 t0 = time.time()
                 stats = make_mosaic(master_path, self.db, out_path,
                                     shared_matcher=self.matcher,

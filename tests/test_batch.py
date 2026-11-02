@@ -1,5 +1,7 @@
 """智能适配（tuning）与批量矩阵（batch）。"""
 
+import os
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -62,6 +64,33 @@ def batch_setup(tmp_path_factory):
         Image.fromarray(rng.integers(0, 255, (200, 160, 3), dtype=np.uint8)).save(
             masters / f"m{i}.png")
     return str(tmp / "tiles.db"), str(masters), tmp
+
+
+def test_batch_style_actually_applied_in_auto_adapt(batch_setup, tmp_path):
+    """回归：智能适配模式下风格不得被吞掉（同种子 hex 与 grid 必须产出不同）。
+
+    主图用有结构的内容（主体+平滑区），让细分适度、格子大到能看清蜂窝缝。
+    """
+    from photomosaic.batch import BatchRunner
+
+    db_path, _masters_dir, tmp = batch_setup
+    # 结构化主图：左亮右暗分界 + 一个主体圆（细分适度，格子不会碎成灰）
+    a = np.zeros((200, 160, 3), np.uint8)
+    a[:, :80] = 210
+    a[:, 80:] = 40
+    yy, xx = np.ogrid[:200, :160]
+    a[((yy - 100) ** 2 + (xx - 80) ** 2) < 900] = (230, 90, 60)
+    master = tmp_path / "structured.png"
+    Image.fromarray(a).save(master)
+
+    out_dir = str(tmp_path / "styled")
+    with BatchRunner(db_path) as runner:
+        runner.run([str(master)], out_dir, styles=["grid", "hex"], auto_adapt=True,
+                   base_params={"levels": 3, "seed": 1})
+    g = np.asarray(Image.open(os.path.join(out_dir, "structured_mosaic.png")).convert("RGB"))
+    h = np.asarray(Image.open(os.path.join(out_dir, "structured_hex_mosaic.png")).convert("RGB"))
+    assert g.shape == h.shape
+    assert not np.array_equal(g, h), "hex 风格在智能适配下被吞掉了（与 grid 完全相同）"
 
 
 def test_batch_matrix_skips_existing(batch_setup):
