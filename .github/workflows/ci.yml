@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system deps (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0
+
+      - name: Install package
+        run: pip install -e ".[dev,gui]"
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Upload pytest log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: .pytest_cache
