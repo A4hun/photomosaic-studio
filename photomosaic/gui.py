@@ -93,6 +93,9 @@ def _hint(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setObjectName("hint")
     lbl.setWordWrap(True)
+    # 允许换行扩展高度、不顶住布局宽度（修复窄窗口/长文案被截断）
+    lbl.setMinimumWidth(0)
+    lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.MinimumExpanding)
     return lbl
 
 
@@ -462,6 +465,7 @@ class GridView(_ImageView):
     Ctrl+拖拽为自由套索（任意形状选区），按住 Shift 退回矩形框选。"""
 
     changed = Signal()
+    before_edit = Signal()   # 编辑前钩子：MainWindow 用来物化自动细分为真实网格
 
     def __init__(self) -> None:
         super().__init__("请先在步骤①打开主图")
@@ -563,6 +567,7 @@ class GridView(_ImageView):
         self._lasso = []
         dragged = span > 4
         changed = False
+        self.before_edit.emit()          # 让 MainWindow 先把自动细分物化成真实网格
         if ctrl and dragged:
             if shift or len(lasso) < 3:              # Shift：矩形框选（旧行为）
                 p0 = self.to_image(start)
@@ -985,7 +990,7 @@ class MainWindow(QMainWindow):
             "cells_x": self.cells_x_spin.value(),
             "level": self._radio_level(),
             "auto": self.auto_check.isChecked(),
-            "threshold": self.threshold_spin.value(),
+            "threshold": float(self.threshold_slider.value()),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value(),
@@ -1026,7 +1031,7 @@ class MainWindow(QMainWindow):
         if 1 <= lvl <= len(self.level_radios):
             self.level_radios[lvl - 1].setChecked(True)
         self.auto_check.setChecked(bool(d.get("auto", True)))
-        self.threshold_spin.setValue(float(d.get("threshold", 25.0)))
+        self.threshold_slider.setValue(int(round(float(d.get("threshold", 25.0)))))
         self.topk_spin.setValue(int(d.get("top_k", 8)))
         self.reuse_spin.setValue(int(d.get("max_reuse", 0)))
         self.radius_spin.setValue(float(d.get("radius", 0.0)))
@@ -1202,7 +1207,7 @@ class MainWindow(QMainWindow):
                 and self._master_pil is not None:
             leaves = adaptive_leaves(self._master_pil, self.tree.leaf_boxes(),
                                      self._effective_levels(),
-                                     self.threshold_spin.value(),
+                                     float(self.threshold_slider.value()),
                                      detail=self.detail_map)
         else:
             leaves = self.tree.leaf_boxes()
@@ -1214,6 +1219,36 @@ class MainWindow(QMainWindow):
         self.grid_info.setText(
             f"有效块数 {len(leaves)} · 层级分布 {dict(sorted(hist.items()))} · "
             f"最细格 ≈{fine}px（由基础块数与级数决定，嫌粗就加大基础块数或级数）")
+
+    def _materialize_auto_grid(self) -> None:
+        """把自动细分预览物化成真实网格，让手动编辑能作用在显示的格子上。
+
+        自动细分时 overlay 显示的是 adaptive_leaves 的预览，不在 tree 里；
+        直接右键点这些"幽灵格"不会生效（tree 里对应位置还是 1 级基础块）。
+        手动编辑时先把预览写回 tree，并关闭自动细分的二次覆盖。"""
+        if self.tree is None or not self.auto_check.isChecked() \
+                or self.detail_map is None or self._master_pil is None:
+            return
+        # 当前 overlay 显示的叶子（自动细分结果）
+        leaves = self.grid_view._leaves
+        if not leaves:
+            return
+        pix = self._master_pixmap()
+        if pix is None:
+            return
+        base_x = self.cells_x_spin.value()
+        base_y = max(1, round(pix.height() / (pix.width() / base_x)))
+        pairs = [(tuple(map(int, b)), int(l)) for b, l in leaves]
+        self.tree = QuadTree.from_leaf_boxes(
+            pix.width(), pix.height(), base_x, base_y, pairs,
+            max_level=max([5] + [p[1] for p in pairs]), min_px=1)
+        self.grid_view.set_tree(self.tree)
+        # 关掉自动细分：手动网格就是最终网格
+        self.auto_check.blockSignals(True)
+        self.auto_check.setChecked(False)
+        self.auto_check.blockSignals(False)
+        self.status_text.setText(
+            "已进入手动编辑模式：自动细分已固化为真实网格，右键/套索可取消细分")
 
     # ---- page 2: library --------------------------------------------------
     def _page_library(self) -> QWidget:
@@ -1477,6 +1512,7 @@ class MainWindow(QMainWindow):
         gl = QVBoxLayout(g)
         self.grid_view = GridView()
         self.grid_view.changed.connect(self._update_grid_info)
+        self.grid_view.before_edit.connect(self._materialize_auto_grid)
         gl.addWidget(self.grid_view, 1)
         hint = QLabel("网格操作（最细粒度 = 右侧所选级数）：左键 = 细分一级；右键 = 合并一级；"
                       "Ctrl+左键拖拽 = 自由套索圈选任意形状并细分到最细；Ctrl+右键拖拽 = 套索取消细分；"
@@ -1539,20 +1575,28 @@ class MainWindow(QMainWindow):
         self.auto_check.setToolTip("勾选后层级上限=所选单选；选「一级」即为经典均匀网格，不再细分。")
         g2l.addWidget(self.auto_check)
         g2l.addWidget(_hint("勾选后层级上限=所选单选；选「一级」即为经典均匀网格，不再细分。"))
-        self.threshold_spin = QDoubleSpinBox()
-        self.threshold_spin.setRange(0.0, 200.0)
-        self.threshold_spin.setValue(25.0)
-        self.threshold_spin.setToolTip("细节能量超过该值才细分。越大越保守，越小越激进。")
+        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.threshold_slider.setRange(0, 100)          # 0=全细分，100=最保守
+        self.threshold_slider.setValue(25)
+        self.threshold_slider.setToolTip("细节能量超过该值才细分：往左越多细节（慢），往右越保守（快/整齐）。")
+        self.threshold_label = QLabel("25")
+        self.threshold_label.setObjectName("hint")
+        self.threshold_label.setMinimumWidth(28)
+        thr_row = QHBoxLayout()
+        thr_row.addWidget(self.threshold_slider, 1)
+        thr_row.addWidget(self.threshold_label)
         f2 = QFormLayout()
-        f2.addRow("细节阈值", self.threshold_spin)
+        f2.addRow("细节阈值", thr_row)
         g2l.addLayout(f2)
-        g2l.addWidget(_hint("超过该能量值才切小：越大越保守（快/整齐），越小越细；建议 8–20。"))
+        g2l.addWidget(_hint("细节能量超过该值才切小：左=细节多（慢），右=保守（快/整齐）；建议 15–40。"))
+        self.threshold_slider.valueChanged.connect(
+            lambda v: self.threshold_label.setText(str(v)))
         self.first_level_check = QCheckBox("首级保守（大块不轻易切碎）")
         self.first_level_check.setToolTip("一级基础块需要 2× 阈值的能量才会细分。")
         g2l.addWidget(self.first_level_check)
         g2l.addWidget(_hint("一级大块不轻易切碎：首级细分门槛 ×2，保持大块完整性。"))
         self.auto_check.toggled.connect(lambda _=False: self._refresh_grid_overlay())
-        self.threshold_spin.valueChanged.connect(lambda _v=0.0: self._refresh_grid_overlay())
+        self.threshold_slider.valueChanged.connect(lambda _v=0: self._refresh_grid_overlay())
         right.addWidget(g2)
 
         g3 = QGroupBox("匹配参数")
@@ -1890,7 +1934,7 @@ class MainWindow(QMainWindow):
         params: Dict[str, object] = {
             "leaf_boxes": self.tree.leaf_boxes() if self.tree else None,
             "levels": levels,
-            "detail_threshold": self.threshold_spin.value(),
+            "detail_threshold": float(self.threshold_slider.value()),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value() or None,
