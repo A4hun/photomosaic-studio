@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photomosaic-studio"
-version = "1.0.0rc1"
+version = "1.0.0"
 description = "照片马赛克工作室：把任意照片变成用你自己的照片库拼成的巨型马赛克拼图（自适应四叉树 / 智能分配 / GPU 加速 / 超大流式 BigTIFF 输出）"
 readme = "README.md"
 license = {text = "MIT"}

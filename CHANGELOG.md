@@ -3,6 +3,25 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.0] - 2026-11-02
+
+首个正式版。在 rc1 基础上修复了合并按钮语义、升级细节度量（噪点不误切）、
+补齐发布工程（pyproject/exe/CI/文档）。
+
+### 修复
+
+- 网格编辑器"合并全部 N 级元素"在层级混排时失效（旧实现只收齐整四兄弟）
+- 细节度量从纯梯度均值升级为梯度+亮度对比度，噪点区不再误切
+- GUI 输出分辨率改为"每格像素"直观选法，命名不再古怪
+- 新增"默认保存到"设置；旋转主图不再把成品写进系统临时目录
+
+### 新增
+
+- 首次启动欢迎指引（一次性）
+- 全局崩溃兜底：未处理异常写 `%LOCALAPPDATA%\photomosaic-studio\error.log`
+- PyInstaller 单文件 exe（66MB，CPU 版）、程序化图标
+- GitHub Actions CI（Windows+Ubuntu × Python 3.11-3.13）
+
 ## [1.0.0rc1] - 2026-11-02
 
 首个候选正式版。核心能力全部就位，进入发布打磨阶段。

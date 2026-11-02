@@ -4,7 +4,7 @@ rendering: 3x3 sub-block LAB feature matching with near-best random selection.
 Clean-room implementation of well-known photomosaic techniques.
 """
 
-__version__ = "1.0.0rc1"
+__version__ = "1.0.0"
 
 from .features import subblock_lab, average_rgb, crop_to_ratio, FEATURE_DIM
 from .db import TileDB
