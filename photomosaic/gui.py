@@ -1026,6 +1026,7 @@ class MainWindow(QMainWindow):
             "cells_x": self.cells_x_spin.value(),
             "level": self._radio_level(),
             "auto": self.auto_check.isChecked(),
+            "signal": self.signal_combo.currentIndex(),
             "threshold": float(self.threshold_slider.value()),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
@@ -1072,6 +1073,9 @@ class MainWindow(QMainWindow):
         if 1 <= lvl <= len(self.level_radios):
             self.level_radios[lvl - 1].setChecked(True)
         self.auto_check.setChecked(bool(d.get("auto", True)))
+        sig = _safe_num(d, "signal", 0, int)
+        if 0 <= sig < self.signal_combo.count():
+            self.signal_combo.setCurrentIndex(sig)
         self.threshold_slider.setValue(_safe_num(d, "threshold", 25, lambda v: int(round(float(v)))))
         self.topk_spin.setValue(_safe_num(d, "top_k", 8, int))
         self.reuse_spin.setValue(_safe_num(d, "max_reuse", 0, int))
@@ -1234,8 +1238,19 @@ class MainWindow(QMainWindow):
         if path:
             with Image.open(path) as im:
                 self._master_pil = im.convert("RGB")
-            self.detail_map = DetailMap(self._master_pil)
+            self._build_detail_map()
         self._rebuild_tree()
+
+    def _build_detail_map(self) -> None:
+        """按"细节识别方式"建细分信号图：梯度能量 or 显著性主体。"""
+        if self._master_pil is None:
+            return
+        if getattr(self, "signal_combo", None) is not None and \
+                self.signal_combo.currentIndex() == 1:
+            from .saliency import SaliencyMap
+            self.detail_map = SaliencyMap(self._master_pil)
+        else:
+            self.detail_map = DetailMap(self._master_pil)
 
     def _rebuild_tree(self) -> None:
         pix = self._master_pixmap()
@@ -1633,6 +1648,18 @@ class MainWindow(QMainWindow):
         self.auto_check.setToolTip("勾选后层级上限=所选单选；选「一级」即为经典均匀网格，不再细分。")
         g2l.addWidget(self.auto_check)
         g2l.addWidget(_hint("勾选后层级上限=所选单选；选「一级」即为经典均匀网格，不再细分。"))
+        # 细节识别方式：梯度能量（纹理）vs 显著性主体（智能抓主旨）
+        self.signal_combo = QComboBox()
+        self.signal_combo.addItems(["梯度能量（纹理细节）", "显著性主体（智能抓主旨）"])
+        self.signal_combo.setToolTip(
+            "梯度能量：按纹理/边缘切分（对毛发、织物等纹理敏感）。\n"
+            "显著性主体：按视觉重点切分（人脸/主体切细，天空/背景保大块）——更懂图片主旨。")
+        fs = QFormLayout()
+        fs.addRow("细节识别", self.signal_combo)
+        g2l.addLayout(fs)
+        g2l.addWidget(_hint("「显著性主体」更懂图：主体切细、背景保大块；「梯度能量」对纹理更敏感。"))
+        self.signal_combo.currentIndexChanged.connect(
+            lambda _i=0: self._on_signal_change())
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.threshold_slider.setRange(0, 100)          # 0=全细分，100=最保守
         self.threshold_slider.setValue(25)
@@ -1726,6 +1753,11 @@ class MainWindow(QMainWindow):
         if not self._setting_cells:
             self._user_touched_cells = True
         self._rebuild_tree()
+
+    def _on_signal_change(self) -> None:
+        """细节识别方式切换：重建信号图并刷新网格预览。"""
+        self._build_detail_map()
+        self._refresh_grid_overlay()
 
     def _reset_grid(self) -> None:
         if self.tree:
@@ -2085,6 +2117,7 @@ class MainWindow(QMainWindow):
             "leaf_boxes": self.tree.leaf_boxes() if self.tree else None,
             "levels": levels,
             "detail_threshold": float(self.threshold_slider.value()),
+            "signal": "saliency" if self.signal_combo.currentIndex() == 1 else "detail",
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value() or None,

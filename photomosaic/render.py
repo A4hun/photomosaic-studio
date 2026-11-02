@@ -524,6 +524,7 @@ def make_mosaic(
     stream_threshold_px: int = STREAM_THRESHOLD_PX,
     stream_strip_rows: Optional[int] = None,
     style: str = "grid",
+    signal: str = "detail",
     should_cancel: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[int, int], None]] = None,
     status: Optional[Callable[[str], None]] = None,
@@ -576,7 +577,12 @@ def make_mosaic(
         else:
             base = uniform_base_boxes(W, H, cells_x, cells_y)
         if adaptive:
-            integral_detail = DetailMap(master)
+            # 细节信号：detail=梯度+对比度（纹理）；saliency=显著性主体（主旨优先）
+            if signal == "saliency":
+                from .saliency import SaliencyMap
+                integral_detail = SaliencyMap(master)
+            else:
+                integral_detail = DetailMap(master)
             leaves = adaptive_leaves(master, base, int(levels),
                                      float(detail_threshold), regions=regions,
                                      detail=integral_detail,
