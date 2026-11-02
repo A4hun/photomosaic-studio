@@ -57,7 +57,7 @@ def test_main_window_constructs_offscreen():
     app = QApplication.instance() or QApplication([])
     win = MainWindow(load_settings=False)
     assert "马赛克" in win.windowTitle()
-    assert len(win.step_buttons) == 5            # 含批量出图页
+    assert len(win.step_buttons) == 4            # 四步向导（批量已融入①+④）
     assert win.cells_x_spin.value() == 100
     assert len(win.level_radios) == 5 and win.level_radios[3].isChecked()
     assert win.grid_view.tree is None          # no master yet
