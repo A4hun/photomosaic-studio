@@ -753,6 +753,9 @@ class MainWindow(QMainWindow):
         if os.path.exists(icon):
             self.setWindowIcon(QIcon(icon))
         self._welcome_shown = False
+        # 主图压缩率缓存（_master_sample_ratio）：(路径,格式,质量) → 字节/像素
+        self._ratio_cache_key: Optional[tuple] = None
+        self._ratio_cache: float = 0.45
         self.resize(*self._DEFAULT_SIZE)
         self.setStyleSheet(_build_style())
         self.master_path: Optional[str] = None
@@ -1820,10 +1823,14 @@ class MainWindow(QMainWindow):
         erow.addWidget(QLabel("导出格式"))
         self.format_combo = QComboBox()
         self.format_combo.addItems(["PNG", "JPEG", "BMP", "TIFF"])
+        self.format_combo.currentIndexChanged.connect(
+            lambda _i=0: self._update_out_info())
         erow.addWidget(self.format_combo)
         self.out_quality = QSpinBox()
         self.out_quality.setRange(30, 100)
         self.out_quality.setValue(100)
+        self.out_quality.valueChanged.connect(
+            lambda _v=0: self._update_out_info())
         self.out_quality.setToolTip("仅 JPEG 有效：100=无损级（文件大），90=肉眼难辨（文件小）。")
         erow.addWidget(QLabel("导出质量"))
         erow.addWidget(self.out_quality)
@@ -1886,6 +1893,52 @@ class MainWindow(QMainWindow):
             return None
         return max(1, self.cells_x_spin.value()) * cp
 
+    # ---- output resolution（以“每格像素”思考，宽度自动推导） ----------------
+    @staticmethod
+    def _fmt_bytes(n: float) -> str:
+        if n >= 1e9:
+            return f"{n / 1e9:.1f} GB"
+        if n >= 1e6:
+            return f"{n / 1e6:.0f} MB"
+        return f"{n / 1e3:.0f} KB"
+
+    def _master_sample_ratio(self, fmt: str) -> float:
+        """按主图内容实测压缩率（每像素字节数），缓存于 (主图,格式,质量)。
+
+        把主图缩到 ≤1024px 后按所选格式实际编码一次，得到真实压缩率再外推
+        到输出尺寸——比固定系数准得多（照片 PNG 实测 0.3~0.6 字节/像素，
+        内容差异极大，固定系数必然不准）。"""
+        key = (self.master_path, fmt, self.out_quality.value())
+        if self._ratio_cache_key == key:
+            return self._ratio_cache
+        ratio = 0.45 if fmt == "PNG" else 0.25     # 无主图时的兜底
+        try:
+            path = self._effective_master()
+            if path and os.path.exists(path):
+                with Image.open(path) as im:
+                    im.thumbnail((1024, 1024), Image.Resampling.BOX)
+                    rgb = im.convert("RGB")
+                    buf = io.BytesIO()
+                    if fmt == "JPEG":
+                        rgb.save(buf, "JPEG",
+                                 quality=self.out_quality.value(), subsampling=0)
+                    else:
+                        rgb.save(buf, fmt)
+                    ratio = max(0.01, buf.tell() / float(rgb.width * rgb.height))
+        except Exception:
+            pass
+        self._ratio_cache_key = key
+        self._ratio_cache = ratio
+        return ratio
+
+    def _estimate_size_text(self, px: int) -> str:
+        """按导出格式给出文件大小预估；流式 BigTIFF 与 BMP/TIFF 为精确值。"""
+        fmt = self.format_combo.currentText()
+        if px > STREAM_THRESHOLD_PX or fmt in ("TIFF", "BMP"):
+            return f"≈{self._fmt_bytes(px * 3 + 4096)}"          # 无压缩，精确
+        ratio = self._master_sample_ratio(fmt)
+        return f"约 {self._fmt_bytes(px * ratio)}"
+
     def _update_out_info(self) -> None:
         W, H = self._master_wh()
         if not W:
@@ -1900,18 +1953,13 @@ class MainWindow(QMainWindow):
             ow = cells * cp
             oh = int(round(H * ow / W))
             head = f"输出 {ow}×{oh} px"
-        # 预估文件大小（流式 BigTIFF 无压缩 = 精确值；PNG/JPEG 给量级估算）
         px = ow * oh
-        mp = px / 1e6
-        parts = [head]
+        parts = [head, f"{px / 1e6:.0f} 百万像素",
+                 self._estimate_size_text(px)]
         if px > STREAM_THRESHOLD_PX:
-            size_gb = (px * 3 + 1024) / 1e9    # 无压缩 BigTIFF + 头
-            parts.append(f"{px / 1e6:.0f} 百万像素 · ≈{size_gb:.1f} GB")
             parts.append("⟳ 流式渲染 BigTIFF（可续传）")
         elif px > 150e6:
-            parts.append(f"{mp:.0f} 百万像素 · ≈{px * 3 / 1e6 * 0.3:.0f} MB · 较大，生成较慢")
-        elif px > 1e6:
-            parts.append(f"{mp:.1f} 百万像素 · ≈{px * 3 / 1e6 * 0.3:.0f} MB")
+            parts.append("较大，生成较慢")
         self.out_info.setText("  ·  ".join(parts))
 
     def _pick_outdir(self) -> None:
