@@ -857,6 +857,16 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close)
 
     def closeEvent(self, ev) -> None:
+        # 先停后台任务：渲染/建库 worker 若在跑，取消并等它退出，
+        # 否则窗口销毁时线程被强杀（QThread destroyed while running）。
+        try:
+            if self._ingest_ctrl is not None:
+                self._ingest_ctrl.cancel()
+            self._render_cancel.set()
+            if self._worker is not None and self._worker.isRunning():
+                self._worker.wait(3000)
+        except Exception:
+            pass
         if self._persist:
             try:
                 self._save_state(SETTINGS_PATH)

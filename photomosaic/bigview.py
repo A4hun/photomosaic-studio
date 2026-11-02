@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, Qt, QThread, QTimer, Signal
@@ -53,6 +53,19 @@ class _RowsWorker(QThread):
             self.done.emit(self._gen, self._rect, arr)
         except Exception as exc:  # noqa: BLE001
             self.done.emit(self._gen, self._rect, exc)
+
+
+# 关闭对话框时在途读线程序的悬挂注册表：跑完自动移除（此时析构才安全）
+_ORPHAN_THREADS: List[QThread] = []
+
+
+def _orphan_until_finished(t: QThread) -> None:
+    """把仍在运行的 QThread 悬挂住：finished 后从注册表移除再析构。
+
+    直接 drop 运行中的 QThread 引用会触发
+    "QThread: Destroyed while thread is still running" 致命警告。"""
+    _ORPHAN_THREADS.append(t)
+    t.finished.connect(lambda: _ORPHAN_THREADS.remove(t))
 
 
 class _ZoomCanvas(QWidget):
@@ -414,7 +427,9 @@ class HugeImageViewDialog(QDialog):
         worker = self._worker
         if worker is not None and worker.isRunning():
             worker.done.disconnect(self._on_rows)
-            worker.wait(300)               # 条带读取通常毫秒级；超时让后台自灭
+            if not worker.wait(300):       # 条带读取通常毫秒级
+                # 慢盘在途读：悬挂到跑完再析构，而不是销毁运行中的线程
+                _orphan_until_finished(worker)
         self._worker = None
         if self._own_reader:
             self.reader.close()
