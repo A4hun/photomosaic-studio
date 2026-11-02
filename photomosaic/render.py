@@ -455,8 +455,20 @@ def _paste_tiles(canvas: Image.Image, db: TileDB, jobs, blend_pct: int,
 
 
 def ext_is_raster(path: str) -> bool:
-    """输出扩展名是否为非 TIFF 的光栅格式（流式时需改写为 .tif）。"""
+    """输出扩展名是否为非 TIFF 的光栅格式。"""
     return os.path.splitext(path)[1].lower() not in (".tif", ".tiff")
+
+
+def _stream_output_path(out_path: str) -> str:
+    """流式输出的扩展名路由：PNG/TIFF 保留，JPEG/BMP 改写为 PNG。
+
+    PNG 与 BigTIFF 都有流式写入器；JPEG 格式上限 65535px 且 Pillow 只能
+    整图编码，BMP 超 4GB 有格式限制——这两类统一改 PNG（无损且支持流式）。
+    """
+    ext = os.path.splitext(out_path)[1].lower()
+    if ext in (".png", ".tif", ".tiff"):
+        return out_path
+    return os.path.splitext(out_path)[0] + ".png"
 
 
 def _check_disk_space(out_path: str, est_bytes: Optional[int]) -> None:
@@ -595,11 +607,12 @@ def make_mosaic(
 
         stream = OW * OH > stream_threshold_px
         if stream:
+            # 输出格式路由：PNG 流式直写（不可续传）；TIFF→BigTIFF（可续传）；
+            # JPEG/BMP 不支持流式（且 JPEG 格式上限 65535px）→ 改 PNG
+            out_path = _stream_output_path(out_path)
             rps = choose_strip_rows(OW, OH)
             est_bytes = estimate_streaming_size(OW, OH, rps)
             _check_disk_space(out_path, est_bytes)   # 写盘前预检：不足直接失败
-            if ext_is_raster(out_path):
-                out_path = os.path.splitext(out_path)[0] + ".tif"
             ckpt_on = False              # 条带级续传由流式路径自己负责
         else:
             est_bytes = None
@@ -823,8 +836,7 @@ def make_mosaic(
             from .streaming import (choose_strip_rows, estimate_streaming_size,
                                     render_streaming)
 
-            if ext_is_raster(out_path):
-                out_path = os.path.splitext(out_path)[0] + ".tif"
+            out_path = _stream_output_path(out_path)
             est_bytes_u = estimate_streaming_size(
                 OW_u, OH_u, choose_strip_rows(OW_u, OH_u))
             _check_disk_space(out_path, est_bytes_u)

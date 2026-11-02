@@ -207,7 +207,19 @@ def render_streaming(
                     decoded.clear()
                     decoded_est = 0
 
-    w = BigTiffStripWriter(out_path, OW, OH, rps, append=done_strips > 0)
+    # 按输出扩展名选写入器：.png → 流式 PNG（无压缩内存占用，不可续传）；
+    # .tif/.tiff → BigTIFF（条带级续传）。
+    from .pngstream import PngStreamWriter
+
+    ext = os.path.splitext(out_path)[1].lower()
+    is_png = ext == ".png"
+    if is_png and done_strips > 0:
+        # PNG 的 zlib 流不可中途定位：续传无意义，直接从头重写
+        done_strips = 0
+    if is_png:
+        w = PngStreamWriter(out_path, OW, OH)
+    else:
+        w = BigTiffStripWriter(out_path, OW, OH, rps, append=done_strips > 0)
     try:
         for si in range(done_strips, n_strips):
             if should_cancel and should_cancel():
@@ -219,7 +231,8 @@ def render_streaming(
             strip = Image.new("RGB", (OW, sy1 - sy0), (255, 255, 255))
             paste_strip(strip, sy0, sy1)
             w.write_strip(si, np.asarray(strip, dtype=np.uint8))
-            w.flush(sync=(si + 1 == n_strips))
+            if not is_png:
+                w.flush(sync=(si + 1 == n_strips))
             if preview is not None:
                 preview.add_strip(np.asarray(strip), sy1 - sy0)
             del strip

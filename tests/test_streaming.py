@@ -170,6 +170,62 @@ def test_streaming_preview_generated(setup):
         assert p.size == (128, 128)      # 小图时预览即原尺寸
 
 
+def test_streaming_png_keeps_format_and_matches(setup):
+    """流式 PNG：保留 .png 扩展名（不再强改 .tif），与整图路径逐像素一致。"""
+    _, _, tmp = setup
+    ref = tmp / "ref.png"
+    out = tmp / "stream.png"
+    s1 = _render(setup, ref, stream_threshold_px=10 ** 12)
+    s2 = _render(setup, out, stream_threshold_px=1, stream_strip_rows=7)
+    assert str(s2["output"]).endswith(".png"), "流式 PNG 不应被改写成 TIFF"
+    assert s2["streamed"] is True
+    assert s2["strips"] > 1
+    a = np.asarray(Image.open(ref).convert("RGB"))
+    b = np.asarray(Image.open(out).convert("RGB"))
+    assert np.array_equal(a, b)
+
+
+def test_streaming_jpeg_reroutes_to_png(setup):
+    """流式不支持 JPEG（格式上限 65535px + Pillow 只能整图编码）→ 自动改 PNG。"""
+    _, _, tmp = setup
+    out = tmp / "photo.jpg"
+    s = _render(setup, out, stream_threshold_px=1, stream_strip_rows=7)
+    assert str(s["output"]).endswith(".png")
+    assert os.path.exists(s["output"])
+    with Image.open(s["output"]) as img:
+        assert img.size == (128, 128)
+
+
+def test_streaming_png_no_resume_but_clean_rerun(setup):
+    """PNG 流式不支持续传（zlib 流不可定位）：取消后重跑从头来，产物完整。"""
+    _, _, tmp = setup
+    ref = tmp / "ref2.png"
+    _render(setup, ref, stream_threshold_px=1, stream_strip_rows=7)
+
+    out = tmp / "res.png"
+    state = {"armed": False, "seen": 0}
+
+    def cancel():
+        if not state["armed"]:
+            return False
+        state["seen"] += 1
+        return state["seen"] > 2
+
+    def arm(msg):
+        if "流式渲染" in msg:
+            state["armed"] = True
+
+    with pytest.raises(RenderCancelled):
+        _render(setup, out, stream_threshold_px=1, stream_strip_rows=7,
+                should_cancel=cancel, status=arm)
+    # 重跑（无取消）→ 完整有效 PNG，与一次性渲染逐像素一致
+    s2 = _render(setup, out, stream_threshold_px=1, stream_strip_rows=7)
+    assert s2["strips"] > 1
+    a = np.asarray(Image.open(ref).convert("RGB"))
+    b = np.asarray(Image.open(out).convert("RGB"))
+    assert np.array_equal(a, b)
+
+
 def test_streaming_uniform_matches_normal_exactly(setup):
     """A1：uniform（levels=1）超大输出也走流式路径，且与整图逐像素一致。"""
     master, db, tmp = setup

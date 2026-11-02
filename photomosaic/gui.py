@@ -1981,14 +1981,19 @@ class MainWindow(QMainWindow):
         return ratio
 
     def _estimate_size_text(self, px: int) -> str:
-        """按导出格式给出文件大小预估；流式 BigTIFF 与 BMP/TIFF 为精确值。"""
+        """按导出格式给出文件大小预估；TIFF/流式 BigTIFF 与非流式 BMP 为精确值。
+
+        流式路由（与 render._stream_output_path 一致）：TIFF→BigTIFF 精确；
+        PNG/JPEG/BMP 超阈值 → PNG 流式（压缩，按内容比率估）。"""
         fmt = self.format_combo.currentText()
-        if px > STREAM_THRESHOLD_PX or fmt in ("TIFF", "BMP"):
+        if fmt == "TIFF" or (fmt == "BMP" and px <= STREAM_THRESHOLD_PX):
             return f"≈{self._fmt_bytes(px * 3 + 4096)}"          # 无压缩，精确
-        # 优先按瓦片库内容实测（成品内容），无主图时回退主图实测
-        ratio = self._tile_sample_ratio(fmt)
+        # 超阈值时 JPEG/BMP 实际输出为 PNG 流式 → 按 PNG 比率估
+        eff_fmt = fmt if px <= STREAM_THRESHOLD_PX else "PNG"
+        # 优先按瓦片库内容实测（成品内容），无库时回退主图实测
+        ratio = self._tile_sample_ratio(eff_fmt)
         if ratio is None:
-            ratio = self._master_sample_ratio(fmt)
+            ratio = self._master_sample_ratio(eff_fmt)
         return f"约 {self._fmt_bytes(px * ratio)}"
 
     def _update_out_info(self) -> None:
@@ -2009,7 +2014,9 @@ class MainWindow(QMainWindow):
         parts = [head, f"{px / 1e6:.0f} 百万像素",
                  self._estimate_size_text(px)]
         if px > STREAM_THRESHOLD_PX:
-            parts.append("⟳ 流式渲染 BigTIFF（可续传）")
+            eff = "BigTIFF（可续传）" if self.format_combo.currentText() == "TIFF" \
+                else "PNG"
+            parts.append(f"⟳ 流式渲染 {eff}")
         elif px > 150e6:
             parts.append("较大，生成较慢")
         self.out_info.setText("  ·  ".join(parts))
@@ -2091,9 +2098,12 @@ class MainWindow(QMainWindow):
         self._result_pix = QPixmap(load_path)    # preview from disk, no RAM copy
         if preview_path and stats.get("streamed"):
             self._last_output = stats["output"]  # 导出/替换仍指向真正的大图
-        # 放大查看：仅流式 BigTIFF（普通 PNG 本来就整图在手，无需分段读）；
+        # 放大查看：仅流式 BigTIFF（PNG 流式不可随机读；普通 PNG 整图在手）；
         # 系统程序打开：只要成品文件在就可用
+        is_bigtiff = bool(self._last_output
+                          and self._last_output.lower().endswith((".tif", ".tiff")))
         self.btn_bigview.setEnabled(bool(self._render_streamed
+                                          and is_bigtiff
                                           and self._last_output
                                           and os.path.exists(self._last_output)))
         self.btn_open_ext.setEnabled(bool(self._last_output
