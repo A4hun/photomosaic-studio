@@ -92,8 +92,13 @@ def render_streaming(
     done_strips: int = 0,
     ckpt_strips: Optional[Callable[[int], None]] = None,
     strip_rows: Optional[int] = None,
+    style=None,
+    master=None,
 ) -> Dict[str, object]:
-    """条带式渲染 `leaves` 到 BigTIFF；返回统计（与整图路径逐像素一致）。"""
+    """条带式渲染 `leaves` 到 BigTIFF/PNG；返回统计（与整图路径逐像素一致）。
+
+    style：风格渲染器（grid/brick/hex/dot）；有缝隙的风格每条带从主图
+    裁对应行区做高斯模糊垫底（与非流式路径的整图背景等价）。"""
     from .render import RenderCancelled, _decode_tile, _fit_tile
 
     total = len(leaves)
@@ -202,7 +207,14 @@ def render_streaming(
                         continue
                     if iy0 != oy0 or iy1 != oy0 + size[1]:
                         img = img.crop((0, iy0 - oy0, size[0], iy1 - oy0))
-                    strip.paste(img, (ox0, iy0 - sy0))
+                    if style is not None and style.has_gaps():
+                        # 蒙版按整叶尺寸生成再同步裁剪（不能按裁剪后尺寸重画形状）
+                        m_full = style.mask(size)
+                        m = m_full.crop((0, iy0 - oy0, size[0], iy1 - oy0)) \
+                            if (iy0 != oy0 or iy1 != oy0 + size[1]) else m_full
+                        strip.paste(img, (ox0, iy0 - sy0), m)
+                    else:
+                        strip.paste(img, (ox0, iy0 - sy0))
                 if decoded_est > _DECODE_CAP_BYTES:   # 与 _paste_tiles 的上限一致
                     decoded.clear()
                     decoded_est = 0
@@ -228,7 +240,14 @@ def render_streaming(
                 raise RenderCancelled("cancelled during streaming paste")
             sy0 = si * rps
             sy1 = min(OH, sy0 + rps)
-            strip = Image.new("RGB", (OW, sy1 - sy0), (255, 255, 255))
+            if style is not None and style.has_gaps() and master is not None:
+                # 有缝隙：条带底 = 主图对应行区放大后高斯模糊（缝隙才贴合主图）
+                my0 = min(master.height - 1, int(sy0 / max(s, 1e-9)))
+                my1 = max(my0 + 1, min(master.height, int(round(sy1 / max(s, 1e-9)))))
+                strip = style.background(
+                    master.crop((0, my0, master.width, my1)), (OW, sy1 - sy0))
+            else:
+                strip = Image.new("RGB", (OW, sy1 - sy0), (255, 255, 255))
             paste_strip(strip, sy0, sy1)
             w.write_strip(si, np.asarray(strip, dtype=np.uint8))
             if not is_png:

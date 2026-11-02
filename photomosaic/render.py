@@ -411,7 +411,7 @@ def _render_tile(raw: bytes, size: Tuple[int, int], blend_pct: int,
 
 
 def _paste_tiles(canvas: Image.Image, db: TileDB, jobs, blend_pct: int,
-                 before=None, after=None, step: int = 2048) -> None:
+                 before=None, after=None, step: int = 2048, style=None) -> None:
     """Paste (leaf_index, x, y, size, tile_id, tint) jobs onto the canvas.
 
     Every distinct tile is fetched (batched SQL) and decoded exactly once - at the
@@ -447,7 +447,12 @@ def _paste_tiles(canvas: Image.Image, db: TileDB, jobs, blend_pct: int,
             for j in chunk:
                 if before:
                     before(j[0])
-                canvas.paste(_fit_tile(decoded[j[4]], j[3], blend_pct, j[5]), (j[1], j[2]))
+                img = _fit_tile(decoded[j[4]], j[3], blend_pct, j[5])
+                if style is not None and style.has_gaps():
+                    m = style.mask(j[3])
+                    canvas.paste(img, (j[1], j[2]), m)
+                else:
+                    canvas.paste(img, (j[1], j[2]))
                 if after:
                     after(j[0])
             if not keep_all:
@@ -518,6 +523,7 @@ def make_mosaic(
     first_level_factor: float = 1.0,
     stream_threshold_px: int = STREAM_THRESHOLD_PX,
     stream_strip_rows: Optional[int] = None,
+    style: str = "grid",
     should_cancel: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[int, int], None]] = None,
     status: Optional[Callable[[str], None]] = None,
@@ -534,6 +540,9 @@ def make_mosaic(
         im.load()
         master = im.convert("RGB")
     W, H = master.size
+
+    from .styles import get_style
+    sty = get_style(style)
 
     if cells_x is None:
         cells_x = max(1, W // max(1, cell_px))
@@ -640,7 +649,9 @@ def make_mosaic(
             if resumed:
                 canvas = Image.open(canvas_path).convert("RGB")
             else:
-                canvas = Image.new("RGB", (OW, OH), (255, 255, 255))
+                # 有缝隙的风格（蜂窝/点彩）垫高斯模糊主图，否则白底
+                canvas = (sty.background(master, (OW, OH)) if sty.has_gaps()
+                          else Image.new("RGB", (OW, OH), (255, 255, 255)))
                 picks = [None] * total
                 matched = pasted = 0
 
@@ -744,7 +755,7 @@ def make_mosaic(
                 preview_path=preview_path,
                 should_cancel=should_cancel, progress=progress, status=status,
                 done_strips=done_strips, ckpt_strips=save_strips,
-                strip_rows=stream_strip_rows)
+                strip_rows=stream_strip_rows, style=sty, master=master)
             del avgs
         else:
             def before(i: int) -> None:
@@ -759,7 +770,7 @@ def make_mosaic(
                     save_ckpt(matched, i + 1)
                     last_ckpt[0] = time.monotonic()
 
-            _paste_tiles(canvas, db, jobs, blend_pct, before, after)
+            _paste_tiles(canvas, db, jobs, blend_pct, before, after, style=sty)
             del avgs
 
             ext_ = os.path.splitext(out_path)[1].lower()
@@ -887,7 +898,7 @@ def make_mosaic(
                 preview_path=preview_path,
                 should_cancel=should_cancel, progress=progress, status=status,
                 done_strips=done_strips, ckpt_strips=save_strips,
-                strip_rows=stream_strip_rows)
+                strip_rows=stream_strip_rows, style=sty, master=master)
             shutil.rmtree(ckpt_dir, ignore_errors=True)
             stats_extra: Dict[str, object] = {
                 "mode": "uniform",
@@ -914,7 +925,11 @@ def make_mosaic(
                 "size": (OW_u, OH_u),
                 **stats_extra,
             }
-        canvas = Image.new("RGB", (cells_x * out_px, cells_y * out_px), (255, 255, 255))
+        # 有缝隙的风格垫高斯模糊主图；砖墙风格偶数行右移半格
+        canvas = (sty.background(master, (cells_x * out_px, cells_y * out_px))
+                  if sty.has_gaps()
+                  else Image.new("RGB", (cells_x * out_px, cells_y * out_px),
+                                 (255, 255, 255)))
         leaf_rects = []
         chosen = []
         jobs = []
@@ -927,11 +942,12 @@ def make_mosaic(
             leaf_rects.append((x * out_px, y * out_px, (x + 1) * out_px,
                                (y + 1) * out_px, 1))
             chosen.append(tid)
-            jobs.append((idx, x * out_px, y * out_px, (out_px, out_px), tid,
+            dx, dy = sty.offset(y, x, out_px, out_px)      # 砖墙：偶数行右移半格
+            jobs.append((idx, x * out_px + dx, y * out_px + dy, (out_px, out_px), tid,
                          (int(flat_a[idx][0]), int(flat_a[idx][1]), int(flat_a[idx][2]))))
         if status:
             status("正在拼贴…")
-        _paste_tiles(canvas, db, jobs, blend_pct,
+        _paste_tiles(canvas, db, jobs, blend_pct, style=sty,
                      before=(lambda i: (_ for _ in ()).throw(RenderCancelled("cancelled"))
                              if (should_cancel and should_cancel()) else None),
                      after=(lambda i: progress(i + 1, total)
