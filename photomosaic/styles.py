@@ -109,7 +109,22 @@ class DotStyle(_GappedStyle):
         return m
 
 
-_STYLES = {s.name: s for s in (Style(), BrickStyle(), HexStyle(), DotStyle())}
+class FlowStyle(Style):
+    """流体照片河：无网格——照片沿主图轮廓方向流动排列（独立渲染路径）。"""
+
+    name = "flow"
+    label = "流体照片河"
+
+
+class SilhouetteStyle(Style):
+    """负空间剪影：只拼显著性主体，背景大胆留白。"""
+
+    name = "silhouette"
+    label = "负空间剪影"
+
+
+_STYLES = {s.name: s for s in (Style(), BrickStyle(), HexStyle(), DotStyle(),
+                               FlowStyle(), SilhouetteStyle())}
 # 标签 → name（GUI 下拉用标签）
 STYLES_BY_LABEL = {s.label: s for s in _STYLES.values()}
 

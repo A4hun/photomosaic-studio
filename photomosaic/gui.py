@@ -1926,18 +1926,18 @@ class MainWindow(QMainWindow):
 
         # ---- 风格（可视化卡片：每种风格用你的主图实时渲染小样例）------------
         gstyle = QGroupBox("风格（点击卡片切换，缩略图是真实效果预览）")
-        gstyle_l = QHBoxLayout(gstyle)
+        gstyle_l = QGridLayout(gstyle)
+        gstyle_l.setHorizontalSpacing(4)
         self._style_buttons: Dict[str, QPushButton] = {}
         from .styles import all_styles
-        for name, label in all_styles():
+        for idx, (name, label) in enumerate(all_styles()):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setChecked(name == "grid")
             b.setMinimumHeight(56)
             b.clicked.connect(lambda _c=False, n=name: self._select_style(n))
             self._style_buttons[name] = b
-            gstyle_l.addWidget(b)
-        gstyle_l.addStretch(1)
+            gstyle_l.addWidget(b, idx // 3, idx % 3)
         right.addWidget(gstyle)
         self._refresh_style_cards()
 
@@ -1984,13 +1984,13 @@ class MainWindow(QMainWindow):
         self.device_combo.setToolTip("匹配计算跑在哪：auto=有 NVIDIA 自动用 GPU；cpu 强制 CPU；gpu 强制 GPU。")
         g3l.addRow("计算设备", self.device_combo)
         g3l.addWidget(_hint("auto：检测到 N 卡自动用 GPU，无卡回落 CPU。"))
-        self.ed_check = QCheckBox("误差扩散（远观更像主图）")
+        self.ed_check = QCheckBox("误差扩散")
         self.ed_check.setChecked(False)
         self.ed_check.setToolTip(
             "Floyd-Steinberg 式误差扩散：每个瓦片的色偏扩散到相邻格并补偿，"
             "整张图远观收敛到主图轮廓（业界成熟拼图保真技术）。建议开。")
         g3l.addRow(self.ed_check)
-        self.grade_check = QCheckBox("成品校色（对主图色调匹配）")
+        self.grade_check = QCheckBox("成品校色")
         self.grade_check.setChecked(True)
         self.grade_check.setToolTip(
             "拼完后整图对着主图做色调校正（均值/方差仿射，印刷业 proofing）："

@@ -628,7 +628,17 @@ def make_mosaic(
     variant_counts: Dict[str, int] = {}
 
     manual = leaf_boxes is not None
-    adaptive = (int(levels) > 1 or bool(regions))
+    # 剪影走叶子过滤（需要显著性），levels=1 也强制走 adaptive 分支拿 leaves
+    adaptive = (int(levels) > 1 or bool(regions) or sty.name == "silhouette")
+
+    # ---- 流体照片河：独立渲染路径（无网格，沿轮廓流线） --------------------
+    if sty.name == "flow":
+        from .flow import render_flow
+        return render_flow(
+            master, db, out_path, matcher=matcher,
+            blend_pct=blend_pct, seed=seed, jpeg_quality=jpeg_quality,
+            device=device, status=status, should_cancel=should_cancel,
+            progress=progress)
 
     if manual or adaptive:
         if manual:
@@ -656,6 +666,16 @@ def make_mosaic(
                                      first_level_factor=first_level_factor)
         else:
             leaves = [(b[0], b[1], b[2], b[3], lvl) for (b, lvl) in base]
+        # ---- 负空间剪影：只保留显著性主体的叶子，背景留白 ------------------
+        if sty.name == "silhouette":
+            from .saliency import SaliencyMap
+            _sal = SaliencyMap(master)
+            _th = 0.10 * 250.0               # 相对显著性 ≥ 0.10 才拼
+            leaves = [l for l in leaves if _sal.energy(l[:4]) >= _th]
+            if not leaves:
+                raise ValueError(
+                    "剪影：这张主图没有检出显著性主体（换张主体清晰的图，"
+                    "或改用其他风格）")
         total = len(leaves)
         boxes = np.asarray([l[:4] for l in leaves], dtype=np.float64)
         integral = IntegralFeatures(master)
