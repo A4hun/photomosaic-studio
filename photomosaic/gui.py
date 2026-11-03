@@ -488,10 +488,19 @@ class GridView(_ImageView):
         self._press_shift = False
         self._lasso: List[QPoint] = []          # 套索轨迹（控件坐标）
         self._style_name = "grid"               # 当前风格：决定叶子画成什么形状
+        self._flow_placements = None            # 流体预览：[(cx, cy, angle)]
+        self._flow_size = (0.0, 0.0)            # 流体瓦片（长, 宽）主图坐标
 
     def set_style(self, name: str) -> None:
         """网格预览按风格画出真实形状（蜂窝六边形/点彩圆形/砖墙错位/网格矩形）。"""
         self._style_name = name
+        self.update()
+
+    def set_flow_overlay(self, placements, tile_len: float = 0.0,
+                         tile_wid: float = 0.0) -> None:
+        """流体预览：传入流线位置列表（None=清除，恢复矩形格）。"""
+        self._flow_placements = placements
+        self._flow_size = (tile_len, tile_wid)
         self.update()
 
     def set_tree(self, tree: Optional[QuadTree]) -> None:
@@ -512,7 +521,24 @@ class GridView(_ImageView):
         if self._pix is None:
             return
         p = QPainter(self)
-        if self._leaves:
+        # 流体风格：画沿主图轮廓的方向流线（旋转小胶囊轮廓），不画矩形格
+        if self._flow_placements:
+            import math as _math
+            pen = QPen(QColor(37, 99, 235, 200))
+            pen.setWidth(1)
+            p.setPen(pen)
+            r = self._disp
+            sx = r.width() / max(1, self._pix.width())
+            sy = r.height() / max(1, self._pix.height())
+            tl, tw = self._flow_size
+            hl, hw = tl / 2.0 * sx, tw / 2.0 * sy
+            for cx, cy, ang in self._flow_placements:
+                ca, sa = _math.cos(ang), _math.sin(ang)
+                px, py = r.x() + cx * sx, r.y() + cy * sy
+                pts = [QPoint(int(px + dx * ca - dy * sa), int(py + dx * sa + dy * ca))
+                       for dx, dy in ((-hl, -hw), (hl, -hw), (hl, hw), (-hl, hw))]
+                p.drawPolygon(QPolygon(pts))
+        elif self._leaves:
             pen = QPen()
             pen.setWidth(1)
             for box, level in self._leaves:
@@ -812,6 +838,8 @@ class MainWindow(QMainWindow):
         self._overlay_timer.setSingleShot(True)
         self._overlay_timer.setInterval(200)
         self._overlay_timer.timeout.connect(self._refresh_grid_overlay)
+        self._flow_field = None            # 流体预览方向场缓存（按主图）
+        self._sil_map = None               # 剪影预览显著性图缓存（按主图）
         # 第③页分栏：保存的 base64 状态待首次显示后应用（构造时布局未定，
         # 立即 restoreState 会被随后的布局冲掉）
         self._splitter3_saved: Optional[str] = None
@@ -1454,6 +1482,8 @@ class MainWindow(QMainWindow):
             self._build_detail_map()
         self._rebuild_tree()
         self._refresh_style_cards()      # 主图就绪：刷新风格卡片的真实小样例
+        self._flow_field = None          # 换主图：方向场/显著性缓存失效
+        self._sil_map = None
 
     def _build_detail_map(self) -> None:
         """按"细节识别方式"建细分信号图：梯度能量 or 显著性主体。"""
@@ -1492,6 +1522,11 @@ class MainWindow(QMainWindow):
         self._overlay_timer.stop()
         if self.tree is None:
             return
+        # 流体风格：网格编辑器不画矩形格，画沿主图轮廓的方向流线（直观预览）
+        if self._style == "flow":
+            self._refresh_flow_overlay()
+            return
+        self.grid_view.set_flow_overlay(None)           # 非流体：清流线叠加
         if self.auto_check.isChecked() and self.detail_map is not None \
                 and self._master_pil is not None:
             leaves = adaptive_leaves(self._master_pil, self.tree.leaf_boxes(),
@@ -1502,6 +1537,7 @@ class MainWindow(QMainWindow):
                                      if self.first_level_check.isChecked() else 1.0)
         else:
             leaves = self.tree.leaf_boxes()
+        leaves = self._preview_style_leaves(leaves)
         self.grid_view.set_leaves(leaves)
         hist: Dict[int, int] = {}
         for _b, lvl in self.grid_view._leaves:
@@ -1510,6 +1546,58 @@ class MainWindow(QMainWindow):
         self.grid_info.setText(
             f"有效块数 {len(leaves)} · 层级分布 {dict(sorted(hist.items()))} · "
             f"最细格 ≈{fine}px（由基础块数与级数决定，嫌粗就加大基础块数或级数）")
+
+    def _preview_style_leaves(self, leaves):
+        """按当前风格对预览叶子做直观变形（与渲染行为一致）：
+        砖墙=奇数基础行右移半格；剪影=只留显著性主体格子，背景将留白。"""
+        if not leaves:
+            return leaves
+        if self._style == "brick":
+            out = []
+            for x0, y0, x1, y1, lvl in (l if len(l) == 5 else (*l[:4], 1)
+                                         for l in leaves):
+                bw = (x1 - x0) << (lvl - 1)
+                bh = (y1 - y0) << (lvl - 1)
+                row = int((y0 + (y1 - y0) / 2) / max(1, bh))
+                dx = bw // 2 if row % 2 else 0
+                out.append((x0 + dx, y0, x1 + dx, y1, lvl))
+            return out
+        if self._style == "silhouette" and self._master_pil is not None:
+            sal = self._silhouette_map()
+            th = 0.10 * 250.0
+            kept = [l for l in leaves if sal.energy(l[:4]) >= th]
+            if kept:
+                return kept
+        return leaves
+
+    def _silhouette_map(self):
+        """剪影预览用的显著性图（按主图缓存，避免每次刷新重算 FFT）。"""
+        if self._sil_map is None and self._master_pil is not None:
+            from .saliency import SaliencyMap
+            self._sil_map = SaliencyMap(self._master_pil)
+        return self._sil_map
+
+    def _refresh_flow_overlay(self) -> None:
+        """流体风格的网格编辑器预览：画沿主图轮廓的方向流线（小胶囊轮廓）。
+
+        只算方向场+流线（不做选片/贴图，几十毫秒级），按主图缓存方向场。"""
+        self.grid_view.set_flow_overlay(None)           # 先清旧
+        if self._master_pil is None or self.tree is None:
+            return
+        if self._flow_field is None:
+            from .flow import orientation_field
+            self._flow_field = orientation_field(self._master_pil, max_dim=256)
+        theta, fs = self._flow_field
+        W, H = self._master_pil.size
+        tile_len = max(12.0, 0.05 * min(W, H))
+        tile_wid = tile_len / 1.7
+        from .flow import flow_placements
+        pl = flow_placements(theta, fs, W, H, tile_len, tile_wid, 0)
+        self.grid_view.set_flow_overlay(pl, tile_len, tile_wid)
+        self.grid_view.set_leaves([])                   # 流体不画矩形格
+        self.grid_info.setText(
+            f"流体照片河：{len(pl)} 张瓦片沿主图轮廓流动排列（无网格，"
+            f"点格编辑对流式布局无效；网格参数在其他风格下生效）")
 
     def _refresh_grid_overlay_debounced(self) -> None:
         """去抖入口：只给阈值滑块这类连续改动用（停稳 200ms 才重算）。"""
