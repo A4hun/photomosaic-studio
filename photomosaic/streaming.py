@@ -19,6 +19,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+from PIL import ImageChops
 
 from .bigtiff import BigTiffStripWriter, estimate_size, strip_layout
 from .db import TileDB
@@ -103,7 +104,8 @@ def render_streaming(
     裁对应行区做高斯模糊垫底（与非流式路径的整图背景等价）。
     luts：成品全局校色 LUT（3×256），每条带写盘前应用（与整图同 LUT，
     流式/整图/续跑三条路像素一致）。
-    matte：剪影软抠图蒙版（与整图同一张），逐条带合成到白底。"""
+    matte：剪影轮廓蒙版（与整图同一张）——瓦片逐张按轮廓裁切贴上，
+    背景纯白，绝无整图罩纱/染色。"""
     from .render import RenderCancelled, _decode_tile, _fit_tile
 
     total = len(leaves)
@@ -226,11 +228,17 @@ def render_streaming(
                         img = img.crop((0, iy0 - oy0, size[0], iy1 - oy0))
                     # 风格布局偏移只移动贴图位置；leaf_rects 仍是逻辑格（统计/替换映射用）
                     px0 = ox0 + leaf_offsets[i][0]
+                    m = None
+                    if matte is not None:
+                        # 剪影：按轮廓裁瓦片（整叶区域蒙版再同步裁剪）
+                        m = matte.crop((px0, iy0, px0 + size[0], iy1))
                     if style is not None and style.has_gaps():
                         # 蒙版按整叶尺寸生成再同步裁剪（不能按裁剪后尺寸重画形状）
                         m_full = style.mask(size)
-                        m = m_full.crop((0, iy0 - oy0, size[0], iy1 - oy0)) \
+                        ms = m_full.crop((0, iy0 - oy0, size[0], iy1 - oy0)) \
                             if (iy0 != oy0 or iy1 != oy0 + size[1]) else m_full
+                        m = ms if m is None else ImageChops.multiply(m, ms)
+                    if m is not None:
                         strip.paste(img, (px0, iy0 - sy0), m)
                     else:
                         strip.paste(img, (px0, iy0 - sy0))
@@ -271,10 +279,6 @@ def render_streaming(
                 for c in range(3):
                     sa[..., c] = luts[c][sa[..., c]]
                 strip = Image.fromarray(sa)
-            if matte is not None:                  # 剪影软抠图：本条带行区蒙版
-                m_rows = matte.crop((0, sy0, OW, sy1))
-                white = Image.new("RGB", strip.size, (255, 255, 255))
-                strip = Image.composite(strip, white, m_rows)
             w.write_strip(si, np.asarray(strip, dtype=np.uint8))
             if not is_png:
                 w.flush(sync=(si + 1 == n_strips))

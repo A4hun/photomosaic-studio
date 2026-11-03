@@ -427,28 +427,23 @@ def _apply_lut(img: Image.Image, lut) -> Image.Image:
 
 
 def _silhouette_matte(master: Image.Image, out_w: int, out_h: int,
-                      blur_r: float) -> Image.Image:
-    """剪影软抠图蒙版（L 图，255=主体实/0=纯白底）。
+                      feather_r: float) -> Image.Image:
+    """剪影轮廓蒙版（L，255=主体/0=空）——二值轮廓 + 窄羽化（仅抗锯齿）。
 
-    业界 soft-matte 思路：显著性值做分位数自适应映射（P70 以下全白、
-    P92 以上全实、中间平滑过渡——任何图都自动找出主体量级），再按格子
-    尺寸羽化——主体中心不透明、边缘渐隐，专业的剪影抠像感。"""
+    面积分位数定主体量：显著性值降序排，取前 ~30% 面积为主体（任何图都
+    可预期）；阈值二值化后只用小半径羽化平滑轮廓线——瓦片被轮廓线干净
+    地裁切，背景纯白，绝无整图罩纱/染色的观感。"""
     from .saliency import saliency_map
-    sal = saliency_map(master)                     # (h2, w2) 0..1.5，P95 归一化
-    lo, hi = np.percentile(sal, [70.0, 92.0])
-    if hi - lo < 1e-6:
-        hi = lo + 1e-6
-    alpha = np.clip((sal - lo) / (hi - lo), 0.0, 1.0)
+    sal = saliency_map(master)
+    th = float(np.quantile(sal, 0.70))           # 面积前 30% 为主体
+    alpha = (sal >= th).astype(np.float64)
     am = Image.fromarray((alpha * 255).astype(np.uint8), "L")
     if am.size != (out_w, out_h):
         am = am.resize((out_w, out_h), Image.Resampling.BILINEAR)
-    return am.filter(ImageFilter.GaussianBlur(radius=blur_r))
-
-
-def _apply_matte(img: Image.Image, matte: Image.Image) -> Image.Image:
-    """按蒙版把图合成到纯白底（matte=0 处为白）。"""
-    white = Image.new("RGB", img.size, (255, 255, 255))
-    return Image.composite(img, white, matte)
+    # 窄羽化（仅轮廓抗锯齿，不是宽渐变带）
+    am = am.filter(ImageFilter.GaussianBlur(radius=feather_r))
+    return am.point(lambda v: 0 if v < 128 else 255).filter(
+        ImageFilter.GaussianBlur(radius=1.2))
 
 
 def _decode_tile(raw: bytes, need: Tuple[int, int], src: Optional[tuple] = None) -> Image.Image:
@@ -496,14 +491,17 @@ def _render_tile(raw: bytes, size: Tuple[int, int], blend_pct: int,
 
 
 def _paste_tiles(canvas: Image.Image, db: TileDB, jobs, blend_pct: int,
-                 before=None, after=None, step: int = 2048, style=None) -> None:
+                 before=None, after=None, step: int = 2048, style=None,
+                 matte: Image.Image = None) -> None:
     """Paste (leaf_index, x, y, size, tile_id, tint) jobs onto the canvas.
 
     Every distinct tile is fetched (batched SQL) and decoded exactly once - at the
     largest size any of its leaves needs - on a thread pool; each leaf then only
     pays a cheap resize/blend.  Pasting stays in leaf order so cancellation and
     checkpoints remain exact.
-    """
+
+    matte：剪影轮廓蒙版（L，255=主体）——每张瓦片按自己所在位置的轮廓
+    区域裁切贴上，主体瓦片实、背景纯白、轮廓线平滑切过瓦片（不是整图罩纱）。"""
     if not jobs:
         return
     need: Dict[int, Tuple[int, int]] = {}
@@ -533,7 +531,14 @@ def _paste_tiles(canvas: Image.Image, db: TileDB, jobs, blend_pct: int,
                 if before:
                     before(j[0])
                 img = _fit_tile(decoded[j[4]], j[3], blend_pct, j[5])
-                if style is not None and style.has_gaps():
+                w, h = j[3]
+                if matte is not None:
+                    # 剪影：按轮廓裁这张瓦片（贴图蒙版 = 轮廓在该格的区域）
+                    m = matte.crop((j[1], j[2], j[1] + w, j[2] + h))
+                    if style is not None and style.has_gaps():
+                        m = ImageChops.multiply(m, style.mask(j[3]))
+                    canvas.paste(img, (j[1], j[2]), m)
+                elif style is not None and style.has_gaps():
                     m = style.mask(j[3])
                     canvas.paste(img, (j[1], j[2]), m)
                 else:
@@ -825,14 +830,21 @@ def make_mosaic(
         # 用预测而非成品本身算，是为了流式/整图/续跑三条路共用同一张 LUT。
         luts = (_grade_lut(picks, tile_avg_np, avgs, boxes, master,
                            blend_pct / 200.0)          # SoftLight 有效强度 ≈ b/2
-                if color_grade else None)
+                if color_grade and sty.name != "silhouette"
+                # 剪影禁校色：LUT 会把纯白底一起染色
+                else None)
         del tile_avg_np
-        # 剪影软抠图蒙版：流式/整图共用同一张（确定性）
+        # 剪影轮廓蒙版：瓦片按轮廓裁切贴（流式/整图共用同一张，确定性）。
+        # 注意剪影禁用成品校色（LUT 会把纯白底也染掉）。
         sil_matte = None
         if sty.name == "silhouette":
             cell_out = max(4.0, (W / max(1, cells_x)) * s)
             sil_matte = _silhouette_matte(master, OW, OH,
-                                          blur_r=cell_out * 0.55)
+                                          feather_r=cell_out * 0.6)
+            if np.asarray(sil_matte).mean() < 2.0:
+                raise ValueError(
+                    "剪影：这张主图没有检出显著性主体（换张主体清晰的图，"
+                    "或改用其他风格）")
 
         # ---- pasting (parallel decode / fit / blend, ordered paste) --------
         say("正在拼贴…")
@@ -914,12 +926,11 @@ def make_mosaic(
                     save_ckpt(matched, i + 1)
                     last_ckpt[0] = time.monotonic()
 
-            _paste_tiles(canvas, db, jobs, blend_pct, before, after, style=sty)
+            _paste_tiles(canvas, db, jobs, blend_pct, before, after, style=sty,
+                         matte=sil_matte)
             del avgs
             if luts is not None:
                 canvas = _apply_lut(canvas, luts)    # 成品全局校色（印刷 proofing）
-            if sil_matte is not None:
-                canvas = _apply_matte(canvas, sil_matte)   # 剪影软抠图合成到白底
 
             ext_ = os.path.splitext(out_path)[1].lower()
             if ext_ in (".jpg", ".jpeg"):

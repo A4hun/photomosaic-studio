@@ -75,3 +75,22 @@ def test_silhouette_keeps_background_white(setup):
     white = float(np.all(np.abs(img.astype(int) - 255) < 6, axis=2).mean())
     assert white > 0.25, f"剪影应大面积留白（白底 {white:.0%}）"
     assert white < 0.9, "剪影主体区域应有瓦片"
+
+
+def test_silhouette_no_veil_exact_white(setup):
+    """剪影绝无"罩纱染色"：背景必须精确纯白、轮廓抗锯齿边 <2%。
+
+    回归 v2 的教训：宽软边带让整图像被染了色。v3 是二值轮廓+瓦片逐张
+    裁切——背景是没被碰过的画布（精确 255），中间带只剩轮廓 AA。"""
+    master, db, tmp = setup
+    out = tmp / "sil_v3.png"
+    make_mosaic(master, db, str(out), cells_x=24, levels=1, seed=1,
+                style="silhouette", color_grade=False)
+    img = np.asarray(Image.open(out).convert("RGB"), dtype=int)
+    d = np.abs(img - 255).max(axis=2)
+    pure = (d == 0).mean()
+    aa = ((d > 0) & (d <= 8)).mean()
+    tiles = (d > 8).mean()
+    assert aa < 0.02, f"抗锯齿边 {aa:.1%} 过宽=罩纱染色"
+    assert 0.4 < pure < 0.85, f"纯白底 {pure:.0%} 应过半且主体显著"
+    assert tiles > 0.10, f"瓦片内容 {tiles:.0%} 应足量"
