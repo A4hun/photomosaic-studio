@@ -1981,13 +1981,11 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.btn_render = QPushButton("生成照片马赛克")
         self.btn_render.setObjectName("primary")
+        self.btn_render.setToolTip(
+            "生成马赛克。①的主图队列有多张时，对队列里每一张各出一张成品；"
+            "只有一张时只出当前那张。")
         self.btn_render.clicked.connect(self._render)
         row.addWidget(self.btn_render)
-        self.btn_batch_render = QPushButton("批量生成")
-        self.btn_batch_render.setToolTip(
-            "把当前③④页的这套配置，批量应用到①里的整个主图队列（每张各出一张成品）。")
-        self.btn_batch_render.clicked.connect(self._render_batch_queue)
-        row.addWidget(self.btn_batch_render)
         self.btn_cancel_render = QPushButton("取消生成")
         self.btn_cancel_render.setEnabled(False)
         self.btn_cancel_render.clicked.connect(lambda: self._render_cancel.set())
@@ -2303,6 +2301,10 @@ class MainWindow(QMainWindow):
         return "mosaic.png"
 
     def _render(self) -> None:
+        # 主图队列有多张时，「生成」= 对队列每张各出一张（批量）；一张则只出当前
+        if self.master_queue.count() > 1:
+            self._render_batch_queue()
+            return
         master_file = self._effective_master()
         if not master_file:
             QMessageBox.warning(self, "主图像", "请先在步骤①打开主图。")
@@ -2433,12 +2435,16 @@ class MainWindow(QMainWindow):
                     auto_adapt=self.batch_auto_adapt.isChecked()
                     if hasattr(self, "batch_auto_adapt") else False,
                     base_params=base_params,
+                    should_cancel=self._render_cancel.is_set,
                     progress=lambda d, t, p: progress(d, t),
                     status=lambda m: message(m))
             return stats
 
         def on_done(stats):
             self._set_busy(False)
+            self.btn_cancel_render.setEnabled(False)
+            self.btn_pause_render.setEnabled(False)
+            self._render_pause.clear()
             if isinstance(stats, dict) and "ok" in stats:
                 self.status_text.setText(
                     f"批量完成 {stats['ok']}/{stats['total']}（跳过 {stats['skipped']}，"
@@ -2447,6 +2453,10 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "部分失败",
                                         "\n".join(stats["errors"][:10]))
 
+        self._render_cancel.clear()
+        self._render_pause.clear()
+        self.btn_cancel_render.setEnabled(True)
+        self.btn_pause_render.setEnabled(True)
         self.status_text.setText(f"批量生成中…（{len(masters)} 张主图 × 当前风格）")
         self._start(fn, on_done)
 

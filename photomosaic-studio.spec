@@ -5,7 +5,7 @@ a = Analysis(
     ['D:/PyCharmProject/project/photomosaic/scripts/_entry_gui.py'],
     pathex=['D:/PyCharmProject/project/photomosaic'],
     binaries=[],
-    datas=[],
+    datas=[('D:/PyCharmProject/project/photomosaic/demo_output/master.png', 'demo_output')],
     hiddenimports=['PySide6', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtCore'],
     hookspath=[],
     hooksconfig={},
