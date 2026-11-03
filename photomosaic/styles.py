@@ -60,6 +60,28 @@ class _GappedStyle(Style):
         base = master.convert("RGB").resize(size, Image.Resampling.BOX)
         return base.filter(ImageFilter.GaussianBlur(radius=max(2, min(size) // 64)))
 
+    def background_region(self, master: Image.Image,
+                          y0: int, y1: int,
+                          out_w: int, full_w: int, full_h: int) -> Image.Image:
+        """流式条带的背景：与整图 background 同半径模糊 + 上下文扩展防接缝。
+
+        整图路径对 (OW,OH) 模糊一次；流式若每条带独立裁+模糊，半径随条带高
+        变化且丢上下文行，条带接缝必然有缝。这里：模糊半径取整图口径
+        （min(全宽,全高)//64），条带向上下各扩 4σ 上下文再裁回，条带间
+        背景连续，与整图路径视觉一致。"""
+        radius = max(2, min(full_w, full_h) // 64)
+        margin = 4 * radius                          # 4σ 上下文，模糊边界不吃接缝
+        s = full_h / max(1, master.height)           # 输出/主图 行缩放
+        ey0 = max(0, y0 - margin)
+        ey1 = min(full_h, y1 + margin)
+        my0 = min(master.height - 1, int(ey0 / s))
+        my1 = max(my0 + 1, min(master.height, int(round(ey1 / s))))
+        crop = master.crop((0, my0, master.width, my1)).convert("RGB")
+        region = crop.resize((out_w, ey1 - ey0), Image.Resampling.BOX)
+        blurred = region.filter(ImageFilter.GaussianBlur(radius=radius))
+        off = y0 - ey0                               # 裁回本条带的精确行
+        return blurred.crop((0, off, out_w, off + (y1 - y0)))
+
 
 class HexStyle(_GappedStyle):
     name = "hex"

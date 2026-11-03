@@ -185,6 +185,23 @@ def test_streaming_png_keeps_format_and_matches(setup):
     assert np.array_equal(a, b)
 
 
+def test_streaming_gapped_style_matches_whole(setup):
+    """有缝隙风格（hex/dot）：条带背景统一半径+上下文扩展后，流式与整图逐像素一致。
+
+    回归：此前每条带独立裁+模糊（半径按条带高、丢上下文）导致接缝不一致。
+    """
+    _, _, tmp = setup
+    for style in ("hex", "dot"):
+        ref = tmp / f"whole_{style}.png"
+        out = tmp / f"stream_{style}.png"
+        common = dict(cells_x=8, levels=2, seed=1, style=style)
+        _render(setup, ref, stream_threshold_px=10 ** 12, **common)
+        _render(setup, out, stream_threshold_px=1, stream_strip_rows=7, **common)
+        a = np.asarray(Image.open(ref).convert("RGB"))
+        b = np.asarray(Image.open(out).convert("RGB"))
+        assert np.array_equal(a, b), f"{style} 流式与整图应逐像素一致"
+
+
 def test_streaming_jpeg_reroutes_to_png(setup):
     """流式不支持 JPEG（格式上限 65535px + Pillow 只能整图编码）→ 自动改 PNG。"""
     _, _, tmp = setup

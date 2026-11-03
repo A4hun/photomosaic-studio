@@ -255,11 +255,9 @@ def render_streaming(
             sy0 = si * rps
             sy1 = min(OH, sy0 + rps)
             if style is not None and style.has_gaps() and master is not None:
-                # 有缝隙：条带底 = 主图对应行区放大后高斯模糊（缝隙才贴合主图）
-                my0 = min(master.height - 1, int(sy0 / max(s, 1e-9)))
-                my1 = max(my0 + 1, min(master.height, int(round(sy1 / max(s, 1e-9)))))
-                strip = style.background(
-                    master.crop((0, my0, master.width, my1)), (OW, sy1 - sy0))
+                # 有缝隙：条带底与整图同半径模糊 + 上下文扩展，条带间连续
+                strip = style.background_region(
+                    master, sy0, sy1, OW, OW, OH)
             else:
                 strip = Image.new("RGB", (OW, sy1 - sy0), (255, 255, 255))
             paste_strip(strip, sy0, sy1)
