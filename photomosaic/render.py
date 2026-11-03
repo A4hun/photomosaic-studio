@@ -139,7 +139,23 @@ class DetailMap:
         return grad_mean + 0.4 * lum_std
 
     def energy(self, box: Box) -> float:
-        return float(self.energies(np.asarray(box))[0])
+        """单矩形细节分的标量快路径（零数组分配；叠加层逐格查询走它）。"""
+        x0, y0, x1, y1 = box
+        cx0 = int(np.clip(np.floor(x0 / self.sx), 0, self.hw - 1))
+        cy0 = int(np.clip(np.floor(y0 / self.sy), 0, self.hh - 1))
+        cx1 = int(np.clip(np.ceil(x1 / self.sx), 1, self.hw))
+        cy1 = int(np.clip(np.ceil(y1 / self.sy), 1, self.hh))
+        if cx1 <= cx0:
+            cx1 = cx0 + 1
+        if cy1 <= cy0:
+            cy1 = cy0 + 1
+        s = self.I[cy1, cx1] - self.I[cy0, cx1] - self.I[cy1, cx0] + self.I[cy0, cx0]
+        area = max(1, (cx1 - cx0) * (cy1 - cy0))
+        grad_mean = float(s[0] / area)
+        lum_mean = float(s[1] / area)
+        lum_sq_mean = float(s[2] / area)
+        lum_std = (lum_sq_mean - lum_mean * lum_mean)
+        return grad_mean + 0.4 * (lum_std if lum_std > 0 else 0.0) ** 0.5
 
 
 class IntegralFeatures:

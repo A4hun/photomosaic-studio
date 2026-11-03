@@ -807,6 +807,11 @@ class MainWindow(QMainWindow):
         self._render_pause = threading.Event()      # 置位 = 暂停生成（可续跑）
         self._style = "grid"                        # 当前马赛克风格（③页卡片选择）
         self._master_overrides: Dict[str, Dict] = {}  # 主图路径 → 单独配置覆盖
+        # 叠加层重算去抖：阈值滑块拖动停稳后才重算（避免每次拖动卡 3 秒）
+        self._overlay_timer = QTimer(self)
+        self._overlay_timer.setSingleShot(True)
+        self._overlay_timer.setInterval(200)
+        self._overlay_timer.timeout.connect(self._refresh_grid_overlay)
         # 第③页分栏：保存的 base64 状态待首次显示后应用（构造时布局未定，
         # 立即 restoreState 会被随后的布局冲掉）
         self._splitter3_saved: Optional[str] = None
@@ -1479,6 +1484,8 @@ class MainWindow(QMainWindow):
         return lvl
 
     def _refresh_grid_overlay(self) -> None:
+        """立即重算叠加层。"""
+        self._overlay_timer.stop()
         if self.tree is None:
             return
         if self.auto_check.isChecked() and self.detail_map is not None \
@@ -1499,6 +1506,10 @@ class MainWindow(QMainWindow):
         self.grid_info.setText(
             f"有效块数 {len(leaves)} · 层级分布 {dict(sorted(hist.items()))} · "
             f"最细格 ≈{fine}px（由基础块数与级数决定，嫌粗就加大基础块数或级数）")
+
+    def _refresh_grid_overlay_debounced(self) -> None:
+        """去抖入口：只给阈值滑块这类连续改动用（停稳 200ms 才重算）。"""
+        self._overlay_timer.start()
 
     def _materialize_auto_grid(self) -> None:
         """把自动细分预览物化成真实网格，让手动编辑能作用在显示的格子上。
@@ -1903,7 +1914,7 @@ class MainWindow(QMainWindow):
         g2l.addWidget(self.first_level_check)
         g2l.addWidget(_hint("一级大块不轻易切碎：首级细分门槛 ×2，保持大块完整性。"))
         self.auto_check.toggled.connect(lambda _=False: self._refresh_grid_overlay())
-        self.threshold_slider.valueChanged.connect(lambda _v=0: self._refresh_grid_overlay())
+        self.threshold_slider.valueChanged.connect(lambda _v=0: self._refresh_grid_overlay_debounced())
         self.first_level_check.toggled.connect(lambda _=False: self._refresh_grid_overlay())
         right.addWidget(g2)
 
@@ -2525,6 +2536,7 @@ class MainWindow(QMainWindow):
         levels = self._effective_levels() if self.auto_check.isChecked() else 1
         base_params: Dict[str, object] = {
             "levels": levels,
+            "cells_x": self.cells_x_spin.value(),   # 基础块数要跟③页走
             "detail_threshold": float(self.threshold_slider.value()),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
