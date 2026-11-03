@@ -115,10 +115,10 @@ class DetailMap:
 
     def _map(self, boxes: np.ndarray) -> np.ndarray:
         out = np.empty_like(boxes, dtype=np.int64)
-        out[:, 0] = np.clip(np.round(boxes[:, 0] / self.sx), 0, self.hw)
-        out[:, 1] = np.clip(np.round(boxes[:, 1] / self.sy), 0, self.hh)
-        out[:, 2] = np.clip(np.round(boxes[:, 2] / self.sx), 1, self.hw)
-        out[:, 3] = np.clip(np.round(boxes[:, 3] / self.sy), 1, self.hh)
+        out[:, 0] = np.clip(np.floor(boxes[:, 0] / self.sx), 0, self.hw - 1)
+        out[:, 1] = np.clip(np.floor(boxes[:, 1] / self.sy), 0, self.hh - 1)
+        out[:, 2] = np.clip(np.ceil(boxes[:, 2] / self.sx), 1, self.hw)
+        out[:, 3] = np.clip(np.ceil(boxes[:, 3] / self.sy), 1, self.hh)
         out[:, 2] = np.maximum(out[:, 2], out[:, 0] + 1)
         out[:, 3] = np.maximum(out[:, 3], out[:, 1] + 1)
         return out
