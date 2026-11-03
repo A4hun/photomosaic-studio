@@ -806,6 +806,7 @@ class MainWindow(QMainWindow):
         self._render_cancel = threading.Event()
         self._render_pause = threading.Event()      # 置位 = 暂停生成（可续跑）
         self._style = "grid"                        # 当前马赛克风格（③页卡片选择）
+        self._master_overrides: Dict[str, Dict] = {}  # 主图路径 → 单独配置覆盖
         # 第③页分栏：保存的 base64 状态待首次显示后应用（构造时布局未定，
         # 立即 restoreState 会被随后的布局冲掉）
         self._splitter3_saved: Optional[str] = None
@@ -1035,6 +1036,7 @@ class MainWindow(QMainWindow):
             "master": self.master_path,
             "master_rot": self.master_rot,
             "masters": self._master_queue_paths(),
+            "master_overrides": {k: v for k, v in self._master_overrides.items()},
             "db": self.db_edit.text(),
             "folders": self._folders(),
             "variants": self._variants(),
@@ -1133,6 +1135,20 @@ class MainWindow(QMainWindow):
             for p in masters:
                 if isinstance(p, str) and os.path.exists(p):
                     self.master_queue.addItem(p)
+        # 主图单独配置恢复
+        mo = d.get("master_overrides")
+        if isinstance(mo, dict):
+            self._master_overrides = {str(k): v for k, v in mo.items()
+                                      if isinstance(v, dict)}
+            for i in range(self.master_queue.count()):
+                it = self.master_queue.item(i)
+                ov = self._master_overrides.get(it.text())
+                if ov:
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+                    it.setToolTip("单独配置: " + ", ".join(
+                        f"{k}={v}" for k, v in ov.items()))
         # 主图/网格恢复依赖磁盘文件：单独容错，失败不影响其余设置
         if d.get("master") and os.path.exists(d["master"]):
             try:
@@ -1241,6 +1257,11 @@ class MainWindow(QMainWindow):
         bclear = QPushButton("清空")
         bclear.clicked.connect(self.master_queue.clear)
         qrow.addWidget(bclear)
+        bcfg = QPushButton("单独配置…")
+        bcfg.setToolTip("给选中的那张主图单独设一套参数（风格/格子/融合等），"
+                        "批量生成时它用自己的配置，其余用统一配置。")
+        bcfg.clicked.connect(self._configure_master)
+        qrow.addWidget(bcfg)
         qrow.addStretch(1)
         gql.addLayout(qrow)
         lay.addWidget(gq)
@@ -1310,6 +1331,84 @@ class MainWindow(QMainWindow):
     def _master_queue_paths(self) -> List[str]:
         return [self.master_queue.item(i).text()
                 for i in range(self.master_queue.count())]
+
+    # ---- 主图单独配置（批量时盖过统一配置） ------------------------------
+    def _configure_master(self) -> None:
+        item = self.master_queue.currentItem()
+        if item is None:
+            QMessageBox.information(self, "单独配置", "先在主图队列里选中一张图。")
+            return
+        path = item.text()
+        existing = self._master_overrides.get(path, {})
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"单独配置：{os.path.basename(path)}")
+        fl = QFormLayout(dlg)
+        from .styles import all_styles
+        style_combo = QComboBox()
+        style_combo.addItem("（跟随统一配置）")
+        for _n, label in all_styles():
+            style_combo.addItem(label)
+        if existing.get("style"):
+            from .styles import get_style
+            lbl = get_style(existing["style"]).label
+            i = style_combo.findText(lbl)
+            if i >= 0:
+                style_combo.setCurrentIndex(i)
+        fl.addRow("风格", style_combo)
+
+        cells = QSpinBox(); cells.setRange(0, 2000)
+        cells.setSpecialValueText("（跟随统一）")
+        cells.setValue(int(existing.get("cells_x", 0)))
+        fl.addRow("基础块数", cells)
+
+        levels = QSpinBox(); levels.setRange(0, 5)
+        levels.setSpecialValueText("（跟随统一）")
+        levels.setValue(int(existing.get("levels", 0)))
+        fl.addRow("细分层级", levels)
+
+        blend = QSpinBox(); blend.setRange(-1, 100)
+        blend.setSpecialValueText("（跟随统一）")
+        blend.setValue(int(existing.get("blend_pct", -1)))
+        fl.addRow("融合强度 %", blend)
+
+        cellpx = QSpinBox(); cellpx.setRange(0, 8192)
+        cellpx.setSpecialValueText("（跟随统一）")
+        cellpx.setValue(int(existing.get("cell_px", 0)))
+        fl.addRow("每格像素", cellpx)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        fl.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # 收集覆盖项（只收集"显式设了"的）
+        ov: Dict[str, object] = {}
+        if style_combo.currentIndex() > 0:
+            from .styles import all_styles as _as
+            ov["style"] = _as()[style_combo.currentIndex() - 1][0]
+        if cells.value() > 0:
+            ov["cells_x"] = cells.value()
+        if levels.value() > 0:
+            ov["levels"] = levels.value()
+        if blend.value() >= 0:
+            ov["blend"] = blend.value() / 100.0
+        if cellpx.value() > 0:
+            ov["cell_px"] = cellpx.value()          # 批量时转 out_width
+        if ov:
+            self._master_overrides[path] = ov
+            item.setText(path)                       # 保持路径为显示文本
+            item.setToolTip("单独配置: " + ", ".join(
+                f"{k}={v}" for k, v in ov.items()))
+            f = item.font(); f.setBold(True); item.setFont(f)
+        else:
+            self._master_overrides.pop(path, None)
+            item.setToolTip("")
+            f = item.font(); f.setBold(False); item.setFont(f)
+        self.status_text.setText(
+            f"{os.path.basename(path)}：{'已设单独配置' if ov else '已恢复统一配置'}")
 
     def _rotate(self, deg: int) -> None:
         if not self.master_path:
@@ -2396,6 +2495,20 @@ class MainWindow(QMainWindow):
         self.status_text.setText(
             f"完成（设备 {stats.get('device')}）{extra} → {stats['output']}")
 
+    def _batch_overrides(self, masters: List[str]) -> Optional[Dict[str, Dict]]:
+        """把主图单独配置整理成 BatchRunner 的 overrides（cell_px 换算成 out_width）。"""
+        master_set = set(masters)
+        out: Dict[str, Dict] = {}
+        for path, ov in self._master_overrides.items():
+            if path not in master_set:
+                continue
+            p = dict(ov)
+            if "cell_px" in p:
+                cx = int(p.get("cells_x", self.cells_x_spin.value()))
+                p["out_width"] = cx * int(p.pop("cell_px"))
+            out[path] = p
+        return out or None
+
     def _render_batch_queue(self) -> None:
         """把当前③④页配置批量应用到①的主图队列（每张各出一张成品）。"""
         masters = self._master_queue_paths()
@@ -2425,6 +2538,7 @@ class MainWindow(QMainWindow):
         out_width = self._effective_out_width()
         if out_width:
             base_params["out_width"] = out_width
+        overrides = self._batch_overrides(masters)
         from .batch import BatchRunner
 
         def fn(progress, message):
@@ -2435,6 +2549,7 @@ class MainWindow(QMainWindow):
                     auto_adapt=self.batch_auto_adapt.isChecked()
                     if hasattr(self, "batch_auto_adapt") else False,
                     base_params=base_params,
+                    overrides=overrides or None,
                     should_cancel=self._render_cancel.is_set,
                     progress=lambda d, t, p: progress(d, t),
                     status=lambda m: message(m))

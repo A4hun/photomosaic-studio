@@ -68,6 +68,7 @@ class BatchRunner:
         auto_adapt: bool = True,
         overwrite: bool = False,
         base_params: Optional[Dict] = None,
+        overrides: Optional[Dict[str, Dict]] = None,
         progress: Optional[Callable[[int, int, str], None]] = None,
         status: Optional[Callable[[str], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
@@ -76,6 +77,7 @@ class BatchRunner:
 
         auto_adapt=True 时每张主图先 analyze → 推荐参数（智能适配）；
         False 时用统一 base_params。
+        overrides：{主图路径: 参数字典}——该主图的单独配置，覆盖统一/推荐参数。
         """
         os.makedirs(out_dir, exist_ok=True)
         styles = styles or ["grid"]
@@ -117,6 +119,9 @@ class BatchRunner:
                     params.update(rec)
                 # 风格必须在参数里（auto_adapt 时 recommend 的 style 已被剔除，这里补回）
                 params["style"] = style
+                # 单独配置：该主图的覆盖参数最后生效（盖过统一/推荐）
+                if overrides and master_path in overrides:
+                    params.update(overrides[master_path])
                 t0 = time.time()
                 stats = make_mosaic(master_path, self.db, out_path,
                                     shared_matcher=self.matcher,
