@@ -487,6 +487,12 @@ class GridView(_ImageView):
         self._press_ctrl = False
         self._press_shift = False
         self._lasso: List[QPoint] = []          # 套索轨迹（控件坐标）
+        self._style_name = "grid"               # 当前风格：决定叶子画成什么形状
+
+    def set_style(self, name: str) -> None:
+        """网格预览按风格画出真实形状（蜂窝六边形/点彩圆形/砖墙错位/网格矩形）。"""
+        self._style_name = name
+        self.update()
 
     def set_tree(self, tree: Optional[QuadTree]) -> None:
         self.tree = tree
@@ -512,7 +518,18 @@ class GridView(_ImageView):
             for box, level in self._leaves:
                 pen.setColor(LEVEL_COLORS.get(level, QColor(0, 0, 0)))
                 p.setPen(pen)
-                p.drawRect(self.img_rect_to_widget(box))
+                r = self.img_rect_to_widget(box)
+                # 按风格画真实形状：蜂窝=六边形、点彩=圆形、其余=矩形
+                if self._style_name == "hex":
+                    x0, y0, w, h = r.x(), r.y(), r.width(), r.height()
+                    p.drawPolygon(QPolygon([
+                        QPoint(int(x0 + w * 0.25), y0), QPoint(int(x0 + w * 0.75), y0),
+                        QPoint(x0 + w, int(y0 + h * 0.5)), QPoint(int(x0 + w * 0.75), y0 + h),
+                        QPoint(int(x0 + w * 0.25), y0 + h), QPoint(x0, int(y0 + h * 0.5))]))
+                elif self._style_name == "dot":
+                    p.drawEllipse(r)
+                else:
+                    p.drawRect(r)
         # 套索/矩形框选的实时预览
         if self._press_ctrl and len(self._lasso) >= 2:
             sel_pen = QPen(QColor(ACCENT))
@@ -1250,6 +1267,20 @@ class MainWindow(QMainWindow):
         if not self.db_edit.text():
             self.db_edit.setText(os.path.join(os.path.dirname(path), "tiles.db"))
         self.status_text.setText(f"主图: {os.path.basename(path)}")
+        # ③页的主图切换器标签同步
+        row = self.master_queue.currentRow()
+        n = self.master_queue.count()
+        self.grid_master_label.setText(
+            f"{os.path.basename(path)}（{row + 1}/{n}）" if n else os.path.basename(path))
+
+    def _step_master(self, delta: int) -> None:
+        """③页内切换主图：沿①的队列前进/后退一张。"""
+        n = self.master_queue.count()
+        if n == 0:
+            self.status_text.setText("主图队列为空：先在①添加主图")
+            return
+        row = self.master_queue.currentRow()
+        self.master_queue.setCurrentRow((row + delta) % n)
 
     def _on_master_queue_select(self, row: int) -> None:
         if 0 <= row < self.master_queue.count():
@@ -1356,7 +1387,9 @@ class MainWindow(QMainWindow):
             leaves = adaptive_leaves(self._master_pil, self.tree.leaf_boxes(),
                                      self._effective_levels(),
                                      float(self.threshold_slider.value()),
-                                     detail=self.detail_map)
+                                     detail=self.detail_map,
+                                     first_level_factor=2.0
+                                     if self.first_level_check.isChecked() else 1.0)
         else:
             leaves = self.tree.leaf_boxes()
         self.grid_view.set_leaves(leaves)
@@ -1659,6 +1692,20 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(w)
         g = QGroupBox("网格编辑器")
         gl = QVBoxLayout(g)
+        # 主图切换器：多张主图时在③页内直接换，不用回①页
+        mrow = QHBoxLayout()
+        mrow.addWidget(QLabel("当前主图"))
+        self.grid_master_label = QLabel("（未加载）")
+        self.grid_master_label.setObjectName("hint")
+        _shrinkable(self.grid_master_label)
+        mrow.addWidget(self.grid_master_label, 1)
+        bprev = QPushButton("← 上一张")
+        bprev.clicked.connect(lambda: self._step_master(-1))
+        mrow.addWidget(bprev)
+        bnext = QPushButton("下一张 →")
+        bnext.clicked.connect(lambda: self._step_master(1))
+        mrow.addWidget(bnext)
+        gl.addLayout(mrow)
         self.grid_view = GridView()
         self.grid_view.changed.connect(self._update_grid_info)
         self.grid_view.before_edit.connect(self._materialize_auto_grid)
@@ -1758,6 +1805,7 @@ class MainWindow(QMainWindow):
         g2l.addWidget(_hint("一级大块不轻易切碎：首级细分门槛 ×2，保持大块完整性。"))
         self.auto_check.toggled.connect(lambda _=False: self._refresh_grid_overlay())
         self.threshold_slider.valueChanged.connect(lambda _v=0: self._refresh_grid_overlay())
+        self.first_level_check.toggled.connect(lambda _=False: self._refresh_grid_overlay())
         right.addWidget(g2)
 
         # ---- 风格（可视化卡片：每种风格用你的主图实时渲染小样例）------------
@@ -1857,6 +1905,7 @@ class MainWindow(QMainWindow):
         self._style = name
         for n, b in self._style_buttons.items():
             b.setChecked(n == name)
+        self.grid_view.set_style(name)          # 网格预览画出该风格的真实形状
         self._refresh_grid_overlay()
 
     def _refresh_style_cards(self) -> None:
