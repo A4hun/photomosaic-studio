@@ -122,7 +122,7 @@ def test_materialize_respects_selected_level(tmp_path):
         win._show_master()
         win.level_radios[1].setChecked(True)       # 二级
         win.auto_check.setChecked(True)
-        win.threshold_slider.setValue(10)
+        win.threshold_slider.setValue(90)         # 反转语义：滑块 90 = 阈值 10
         win._refresh_grid_overlay()
         assert len(win.grid_view._leaves) > len(win.tree.leaf_boxes())
         win._materialize_auto_grid()

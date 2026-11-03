@@ -840,6 +840,12 @@ class MainWindow(QMainWindow):
         self._overlay_timer.timeout.connect(self._refresh_grid_overlay)
         self._flow_field = None            # 流体预览方向场缓存（按主图）
         self._sil_map = None               # 剪影预览显著性图缓存（按主图）
+        # 设置自动保存（去抖 1s）：改动即落盘，不再依赖正常关闭——
+        # 进程被杀/崩溃/断电后设置也不丢（默认保存位置、参数、队列全在）
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1000)
+        self._autosave_timer.timeout.connect(self._autosave_now)
         # 第③页分栏：保存的 base64 状态待首次显示后应用（构造时布局未定，
         # 立即 restoreState 会被随后的布局冲掉）
         self._splitter3_saved: Optional[str] = None
@@ -884,6 +890,31 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._page_result())
         hbox.addWidget(self.pages, 1)
         self.setCentralWidget(central)
+
+        # ---- 设置自动保存：主要控件一变就去抖落盘 ----------------------------
+        for sig in (
+            self.outdir_edit.textChanged,
+            self.db_edit.textChanged,
+            self.threshold_slider.valueChanged,
+            self.blend_slider.valueChanged,
+            self.cells_x_spin.valueChanged,
+            self.cell_px_spin.valueChanged,
+            self.topk_spin.valueChanged,
+            self.reuse_spin.valueChanged,
+            self.seed_spin.valueChanged,
+            self.out_quality.valueChanged,
+            self.signal_combo.currentIndexChanged,
+            self.device_combo.currentIndexChanged,
+            self.auto_check.toggled,
+            self.first_level_check.toggled,
+            self.ed_check.toggled,
+            self.grade_check.toggled,
+            self.zoom_combo.currentIndexChanged,
+            self.format_combo.currentIndexChanged,
+            self.master_queue.model().rowsInserted,
+            self.master_queue.model().rowsRemoved,
+        ):
+            sig.connect(lambda _a=None: self._autosave_timer.start())
 
         # ---- bottom bar ---------------------------------------------------
         bar = QWidget()
@@ -1083,7 +1114,7 @@ class MainWindow(QMainWindow):
             "auto": self.auto_check.isChecked(),
             "signal": self.signal_combo.currentIndex(),
             "style": self._style,
-            "threshold": float(self.threshold_slider.value()),
+            "threshold": self._threshold_value(),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value(),
@@ -1135,7 +1166,7 @@ class MainWindow(QMainWindow):
         if 0 <= sig < self.signal_combo.count():
             self.signal_combo.setCurrentIndex(sig)
         self._select_style(str(d.get("style", "grid")))
-        self.threshold_slider.setValue(_safe_num(d, "threshold", 25, lambda v: int(round(float(v)))))
+        self.threshold_slider.setValue(100 - _safe_num(d, "threshold", 25, lambda v: int(round(float(v)))))
         self.topk_spin.setValue(_safe_num(d, "top_k", 8, int))
         self.reuse_spin.setValue(_safe_num(d, "max_reuse", 0, int))
         self.radius_spin.setValue(_safe_num(d, "radius", 0.0, float))
@@ -1221,6 +1252,15 @@ class MainWindow(QMainWindow):
     def _save_state(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(self._gather_state(), fh, ensure_ascii=False, indent=1)
+
+    def _autosave_now(self) -> None:
+        """改动去抖 1s 后落盘（被杀/崩溃也不丢设置）。"""
+        if not self._persist:
+            return
+        try:
+            self._save_state(SETTINGS_PATH)
+        except Exception:
+            pass
 
     def _save_project(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "保存项目", "project.pmproj",
@@ -1517,6 +1557,10 @@ class MainWindow(QMainWindow):
             return 1   # 「一级」= 经典均匀网格，自动细分不再介入
         return lvl
 
+    def _threshold_value(self) -> float:
+        """实际细节阈值 = 100 − 滑块值（滑块语义已反转：右=更细腻）。"""
+        return float(100 - self.threshold_slider.value())
+
     def _refresh_grid_overlay(self) -> None:
         """立即重算叠加层。"""
         self._overlay_timer.stop()
@@ -1531,7 +1575,7 @@ class MainWindow(QMainWindow):
                 and self._master_pil is not None:
             leaves = adaptive_leaves(self._master_pil, self.tree.leaf_boxes(),
                                      self._effective_levels(),
-                                     float(self.threshold_slider.value()),
+                                     self._threshold_value(),
                                      detail=self.detail_map,
                                      first_level_factor=2.0
                                      if self.first_level_check.isChecked() else 1.0)
@@ -1988,9 +2032,11 @@ class MainWindow(QMainWindow):
         self.signal_combo.currentIndexChanged.connect(
             lambda _i=0: self._on_signal_change())
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setRange(0, 100)          # 0=全细分，100=最保守
-        self.threshold_slider.setValue(25)
-        self.threshold_slider.setToolTip("细节能量超过该值才细分：往左越多细节（慢），往右越保守（快/整齐）。")
+        self.threshold_slider.setRange(0, 100)          # 显示"细节程度"：右=越细腻
+        self.threshold_slider.setValue(75)              # 实际阈值 = 100 - 滑块值 = 25
+        self.threshold_slider.setToolTip(
+            "细节程度：往右越细腻（格子切得小、贴主体、更慢），"
+            "往左越大块（更快更整齐）。")
         self.threshold_label = QLabel("25")
         self.threshold_label.setObjectName("hint")
         self.threshold_label.setMinimumWidth(28)
@@ -1998,11 +2044,13 @@ class MainWindow(QMainWindow):
         thr_row.addWidget(self.threshold_slider, 1)
         thr_row.addWidget(self.threshold_label)
         f2 = QFormLayout()
-        f2.addRow("细节阈值", thr_row)
+        f2.addRow("细节程度", thr_row)
         g2l.addLayout(f2)
-        g2l.addWidget(_hint("细节能量超过该值才切小：左=细节多（慢），右=保守（快/整齐）；建议 15–40。"))
+        g2l.addWidget(_hint(
+            "往右越细腻（细分多、贴主体、慢），往左越大块（快/整齐）。"
+            "内部阈值 = 100 − 滑块值，建议实际阈值 15–40。"))
         self.threshold_slider.valueChanged.connect(
-            lambda v: self.threshold_label.setText(str(v)))
+            lambda v: self.threshold_label.setText(str(100 - v)))
         self.first_level_check = QCheckBox("首级保守（大块不轻易切碎）")
         self.first_level_check.setToolTip("一级基础块需要 2× 阈值的能量才会细分。")
         g2l.addWidget(self.first_level_check)
@@ -2123,6 +2171,7 @@ class MainWindow(QMainWindow):
             b.setChecked(n == name)
         self.grid_view.set_style(name)          # 网格预览画出该风格的真实形状
         self._refresh_grid_overlay()
+        self._autosave_timer.start()            # 风格也是要记忆的设置
 
     def _refresh_style_cards(self) -> None:
         """为每种风格用当前主图渲染真实小样例作为卡片图标（独立线程，不占主渲染 worker）。
@@ -2537,7 +2586,7 @@ class MainWindow(QMainWindow):
         params: Dict[str, object] = {
             "leaf_boxes": self.tree.leaf_boxes() if self.tree else None,
             "levels": levels,
-            "detail_threshold": float(self.threshold_slider.value()),
+            "detail_threshold": self._threshold_value(),
             "signal": "saliency" if self.signal_combo.currentIndex() == 1 else "detail",
             "style": self._style,
             "error_diffusion": self.ed_check.isChecked(),
@@ -2645,7 +2694,7 @@ class MainWindow(QMainWindow):
         base_params: Dict[str, object] = {
             "levels": levels,
             "cells_x": self.cells_x_spin.value(),   # 基础块数要跟③页走
-            "detail_threshold": float(self.threshold_slider.value()),
+            "detail_threshold": self._threshold_value(),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value() or None,

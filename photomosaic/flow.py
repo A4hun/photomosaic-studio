@@ -179,20 +179,31 @@ def render_flow(master: Image.Image, db, out_path: str, matcher=None,
         canvas.paste(tile, pos, mm)
         cov_img.paste(255, pos, mm)
 
-    # ---- 补流补空：流线汇聚留出的空白区，按局部流向补放瓦片 --------------
-    # （流场本性：流线挤向同几条"河道"；按真实蒙版覆盖补空，照片河铺满）
+    # ---- 补空（保守）：只补真正的大空洞，且稀疏 ----------------------------
+    # 教训：密集补空=随机位置乱堆，非常丑。改成：该格及周边 2 格半径都几乎
+    # 没被碰到才算空洞；每格留一半跳过（稀疏点缀）；总量封顶流线数的 1/3。
     Hf, Wf = theta.shape
     cell = max(2.0, tile_wid)                       # 补空扫描步距
     gw, gh = int(W / cell) + 1, int(H / cell) + 1
     cov_small = np.asarray(
         cov_img.resize((gw, gh), Image.Resampling.BOX), dtype=np.float64)
-    uncovered = cov_small < 24.0                    # 该格几乎没被瓦片碰到
+    uncovered = cov_small < 6.0                     # 几乎绝对没被瓦片碰到
+    # 腐蚀一圈：周边 2 格也没碰到才算真空洞
+    padded = np.pad(uncovered, 2, constant_values=False)
+    eroded = uncovered.copy()
+    for dy in (-2, -1, 0, 1, 2):
+        for dx in (-2, -1, 0, 1, 2):
+            if dx or dy:
+                eroded &= padded[2 + dy:2 + dy + gh, 2 + dx:2 + dx + gw]
+    cap = max(24, len(placements) // 3)
     fills: List[Tuple[float, float, float]] = []
     fy_rng = np.random.default_rng(None if seed is None else seed + 1)
     for gy in range(gh):
         for gx in range(gw):
-            if not uncovered[gy, gx]:
-                continue
+            if len(fills) >= cap:
+                break
+            if not eroded[gy, gx] or (gx + gy) % 2:
+                continue                            # 稀疏：隔一格补一张
             cx = (gx + 0.5 + fy_rng.uniform(-0.3, 0.3)) * cell
             cy = (gy + 0.5 + fy_rng.uniform(-0.3, 0.3)) * cell
             if not (0 <= cx < W and 0 <= cy < H):

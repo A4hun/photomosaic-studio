@@ -75,6 +75,6 @@ def test_garbage_state_tolerated():
                     "splitter3": "!!!not-base64!!!",
                     "tree_leaves": "nope",
                     "master": 12345})
-    assert w.threshold_slider.value() == 25    # 默认
+    assert w.threshold_slider.value() == 75    # 默认（滑块反转：75=阈值25）
     assert w.pages.currentIndex() == 0
     w.close()

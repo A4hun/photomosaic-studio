@@ -30,8 +30,9 @@ def test_materialize_auto_grid(tmp_path):
     app.processEvents()
 
     # 自动细分开着：overlay 有幽灵格，tree 里全是 1 级
+    # （滑块语义已反转：右=更细。滑块 90 = 实际阈值 10 = 激进细分）
     win.auto_check.setChecked(True)
-    win.threshold_slider.setValue(10)
+    win.threshold_slider.setValue(90)
     win._refresh_grid_overlay()
     overlay_n = len(win.grid_view._leaves)
     assert all(l[1] == 1 for l in win.tree.leaf_boxes()), "tree 里应全是 1 级"
