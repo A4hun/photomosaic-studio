@@ -20,6 +20,12 @@ def main() -> int:
     exe = os.path.join(ROOT, ".venv", "Scripts", "pyinstaller.exe")
     if not os.path.exists(exe):
         exe = os.path.join(ROOT, ".venv", "Scripts", "pyinstaller")
+    # 首次打开的演示主图：缺了就现生成，打进 exe（add-data）
+    demo_master = os.path.join(ROOT, "demo_output", "master.png")
+    if not os.path.exists(demo_master):
+        subprocess.check_call(
+            [os.path.join(ROOT, ".venv", "Scripts", "python"),
+             os.path.join(ROOT, "scripts", "demo.py")], cwd=ROOT)
     name = "photomosaic-studio" + ("-debug" if debug else "")
     cmd = [
         exe,
@@ -31,6 +37,8 @@ def main() -> int:
         "--distpath", dist,
         "--workpath", build,
         "--clean", "--noconfirm",
+        # 首次打开的演示主图（PyInstaller Windows 用 ; 分隔 src;dest）
+        "--add-data", demo_master + ";demo_output",
         # PySide6 在 photomosaic.gui 里条件 import，静态分析抓不到
         "--hidden-import", "PySide6",
         "--hidden-import", "PySide6.QtWidgets",

@@ -2738,11 +2738,24 @@ def _install_excepthook() -> None:
     sys.excepthook = hook
 
 
+def _bundled_demo_master() -> Optional[str]:
+    """打包进 exe 的首次启动演示主图（add-data 进来；源码跑时用仓库里的）。"""
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(base, "demo_output", "master.png")
+    return p if os.path.exists(p) else None
+
+
 def run_gui(argv: Optional[List[str]] = None, master: Optional[str] = None,
             db: Optional[str] = None, folder: Optional[str] = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv[1:])
     _install_excepthook()
     win = MainWindow()
     win.prefill(master=master, db=db, folder=folder)
+    # 首次打开（无存档主图、无命令行主图）→ 默认加载打包进来的演示图
+    if win.master_path is None:
+        demo = _bundled_demo_master()
+        if demo:
+            win.prefill(master=demo)
     win.show()
     return app.exec()
