@@ -1060,6 +1060,7 @@ class MainWindow(QMainWindow):
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value(),
             "blend": self.blend_slider.value(),
+            "error_diffusion": self.ed_check.isChecked(),
             "seed": self.seed_spin.value(),
             "cell_px": self._cell_px() or 0,
             "out_dir": self.outdir_edit.text().strip(),
@@ -1110,6 +1111,7 @@ class MainWindow(QMainWindow):
         self.reuse_spin.setValue(_safe_num(d, "max_reuse", 0, int))
         self.radius_spin.setValue(_safe_num(d, "radius", 0.0, float))
         self.blend_slider.setValue(_safe_num(d, "blend", 55, int))
+        self.ed_check.setChecked(bool(d.get("error_diffusion", False)))
         self.seed_spin.setValue(_safe_num(d, "seed", -1, int))
         # 输出清晰度：新版存 cell_px；旧版只有 out_width → 按块数换算迁移
         cp = _safe_num(d, "cell_px", 0, int) or 0
@@ -1980,6 +1982,12 @@ class MainWindow(QMainWindow):
         self.device_combo.setToolTip("匹配计算跑在哪：auto=有 NVIDIA 自动用 GPU；cpu 强制 CPU；gpu 强制 GPU。")
         g3l.addRow("计算设备", self.device_combo)
         g3l.addWidget(_hint("auto：检测到 N 卡自动用 GPU，无卡回落 CPU。"))
+        self.ed_check = QCheckBox("误差扩散（远观更像主图）")
+        self.ed_check.setChecked(False)
+        self.ed_check.setToolTip(
+            "Floyd-Steinberg 式误差扩散：每个瓦片的色偏扩散到相邻格并补偿，"
+            "整张图远观收敛到主图轮廓（业界成熟拼图保真技术）。建议开。")
+        g3l.addRow(self.ed_check)
         right.addWidget(g3)
         right.addStretch(1)
         right_w = QWidget()
@@ -2436,6 +2444,7 @@ class MainWindow(QMainWindow):
             "detail_threshold": float(self.threshold_slider.value()),
             "signal": "saliency" if self.signal_combo.currentIndex() == 1 else "detail",
             "style": self._style,
+            "error_diffusion": self.ed_check.isChecked(),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value() or None,
@@ -2548,6 +2557,7 @@ class MainWindow(QMainWindow):
             "first_level_factor": 2.0 if self.first_level_check.isChecked() else 1.0,
             "style": self._style,
             "signal": "saliency" if self.signal_combo.currentIndex() == 1 else "detail",
+            "error_diffusion": self.ed_check.isChecked(),
         }
         out_width = self._effective_out_width()
         if out_width:

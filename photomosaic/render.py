@@ -541,6 +541,7 @@ def make_mosaic(
     stream_strip_rows: Optional[int] = None,
     style: str = "grid",
     signal: str = "detail",
+    error_diffusion: bool = False,
     shared_matcher: Optional[Matcher] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[int, int], None]] = None,
@@ -719,7 +720,8 @@ def make_mosaic(
             up, ud = plan_assignments(
                 matcher, np.asarray(boxes, dtype=np.int64)[undone], feats[undone],
                 avgs[undone], groups, (W, H), top_k=top_k, seed=seed,
-                max_reuse=max_reuse, progress=on_plan, check=check)
+                max_reuse=max_reuse, error_diffusion=error_diffusion,
+                progress=on_plan, check=check)
             for j, i in enumerate(undone):
                 picks[i] = int(up[j])
                 dists[i] = float(ud[j])
@@ -870,7 +872,7 @@ def make_mosaic(
         picks, dists = plan_assignments(
             matcher, boxes_u, flat_f, flat_a, _tile_groups(metas),
             (cells_x * out_px, cells_y * out_px), top_k=top_k, seed=seed,
-            max_reuse=max_reuse,
+            max_reuse=max_reuse, error_diffusion=error_diffusion,
             progress=(lambda ph, d, tot: progress(d, tot)) if progress else None,
             check=(lambda: (_ for _ in ()).throw(RenderCancelled("cancelled"))
                    if (should_cancel and should_cancel()) else None))

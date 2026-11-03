@@ -105,6 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
     common_match.add_argument("--out-width", type=int, default=None, metavar="PX",
                               help="output image width in pixels; height follows the "
                                    "master aspect (default: master size)")
+    common_match.add_argument("--error-diffusion", action="store_true",
+                              help="误差扩散：瓦片色偏扩散到邻居并补偿，远观更像主图"
+                                   "（Floyd-Steinberg 式，业界成熟拼图保真技术）")
     common_match.add_argument("--stream-threshold", type=int, default=None, metavar="PX",
                               help="output pixel count above which rendering switches "
                                    f"to streaming BigTIFF (default {STREAM_THRESHOLD_PX})")
@@ -215,6 +218,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                      else STREAM_THRESHOLD_PX),
                 stream_strip_rows=args.stream_strip_rows,
                 blend=args.blend, out_width=args.out_width,
+                error_diffusion=args.error_diffusion,
                 progress=_progress_printer(),
             )
         _print_stats(stats)
@@ -241,6 +245,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                      else STREAM_THRESHOLD_PX),
                 stream_strip_rows=args.stream_strip_rows,
                 blend=args.blend, out_width=args.out_width,
+                error_diffusion=args.error_diffusion,
                 progress=_progress_printer(),
             )
         finally:

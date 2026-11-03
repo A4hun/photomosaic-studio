@@ -40,6 +40,7 @@ def plan_assignments(
     seed: Optional[int] = None,
     max_reuse: int = 0,
     avoid_adjacent: bool = True,
+    error_diffusion: bool = False,
     progress: Optional[Callable[[str, int, int], None]] = None,
     check: Optional[Callable[[], None]] = None,
 ):
@@ -47,6 +48,10 @@ def plan_assignments(
 
     ``groups`` maps tile position -> source-photo id (variants of the same photo
     share one id).  ``check`` is called periodically and may raise to abort.
+
+    error_diffusion=True 时按扫描序（从左到右、从上到下）处理，并把每个瓦片的
+    平均色误差按 Floyd-Steinberg 权重扩散到右/下邻居——邻居选片时补偿，整张图
+    远观收敛到主图，不再每格各自为政（业界成熟的拼图保真技术）。
     """
     L = int(boxes.shape[0])
     n = matcher.n
@@ -90,6 +95,26 @@ def plan_assignments(
         obox[:, 3] = np.maximum(obox[:, 1] + 1, -(-boxes[:, 3] // step))
         np.clip(obox[:, [0, 2]], 0, ow_, out=obox[:, [0, 2]])
         np.clip(obox[:, [1, 3]], 0, oh, out=obox[:, [1, 3]])
+
+    # ---- 误差扩散：叶子 → 粗网格行列，扫描序处理 + Floyd-Steinberg 误差扩散 ----
+    err = None
+    grid_rc = None
+    tile_avg = None
+    if error_diffusion:
+        # 瓦片平均色（转成 numpy；GPU 时在 CPU 上取一份）
+        tile_avg = np.asarray(matcher.avgs if not hasattr(matcher.avgs, "get")
+                              else matcher.avgs.get(), dtype=np.float64)
+        # 叶子按其中心映射到粗网格（自适应大小格混排也按中心归位）
+        min_w = max(1, int((boxes[:, 2] - boxes[:, 0]).min()))
+        min_h = max(1, int((boxes[:, 3] - boxes[:, 1]).min()))
+        cols = max(1, int(np.ceil(W / min_w)))
+        rows = max(1, int(np.ceil(H / min_h)))
+        cx = np.clip(((boxes[:, 0] + boxes[:, 2]) / 2 / W * cols).astype(np.int64), 0, cols - 1)
+        cy = np.clip(((boxes[:, 1] + boxes[:, 3]) / 2 / H * rows).astype(np.int64), 0, rows - 1)
+        grid_rc = cy * cols + cx
+        err = np.zeros((rows, cols, 3), dtype=np.float64)
+        # 扫描序：按 (行, 列) 排序（误差扩散必须是因果顺序）
+        order = np.argsort(grid_rc, kind="stable")
 
     for t, i in enumerate(order):
         if t % 512 == 0:
@@ -139,12 +164,32 @@ def plan_assignments(
             cost[~np.isfinite(cd)] = np.inf
             if jitter is not None:
                 cost += jitter[i]
+            # 误差扩散：偏向能补偿累计色偏的候选（远观收敛到主图）
+            cy = cx = None
+            target = None
+            if error_diffusion:
+                cy, cx = divmod(int(grid_rc[i]), err.shape[1])
+                target = avgs[i] + err[cy, cx]
+                rgb_err = ((tile_avg[ci] - target) ** 2).sum(axis=1)
+                span_rgb = max(1.0, float(np.ptp(tile_avg[ci], axis=0).sum()))
+                cost += 2.0 * rgb_err / span_rgb          # 与特征误差同量级
             j = int(np.argmin(cost))
             if np.isfinite(cost[j]):
                 chosen = int(ci[j])
                 picks[i] = chosen
                 dists[i] = float(cd[j])
                 usage[chosen] += 1
+                if error_diffusion and target is not None:
+                    e = target - tile_avg[chosen]         # 本格的色偏
+                    H_, W_ = err.shape[0], err.shape[1]
+                    if cx + 1 < W_:
+                        err[cy, cx + 1] += e * (7 / 16)
+                    if cy + 1 < H_:
+                        if cx > 0:
+                            err[cy + 1, cx - 1] += e * (3 / 16)
+                        err[cy + 1, cx] += e * (5 / 16)
+                        if cx + 1 < W_:
+                            err[cy + 1, cx + 1] += e * (1 / 16)
         if chosen < 0:
             # nothing usable among the candidates (colour radius / reuse cap):
             # exact, cap-aware pick over the whole library.
