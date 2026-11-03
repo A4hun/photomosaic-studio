@@ -35,3 +35,10 @@ dist/
 .vscode/
 Thumbs.db
 .DS_Store
+
+# QA 生成的测试夹具/产出（运行时才生成，不入库）
+_qa/out/
+_qa/**/*.db*
+_qa/**/*.db-shm
+_qa/**/*.db-wal
+
