@@ -36,7 +36,7 @@ def test_softlight_formula_pixel_exact(tmp_path):
     with TileDB() as db:
         ingest(db, str(folder), workers=1)
         make_mosaic(master, db, str(out), cells_x=1, cell_px=8, levels=1,
-                    blend=1.0, top_k=1, seed=1)
+                    blend=1.0, top_k=1, seed=1, color_grade=False)
     got = np.asarray(Image.open(out).convert("RGB"))
     tile = Image.new("RGB", (8, 8), (100, 150, 200))
     solid = Image.new("RGB", (8, 8), (50, 200, 80))

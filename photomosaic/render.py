@@ -382,6 +382,49 @@ def _tile_groups(metas) -> np.ndarray:
     return out
 
 
+def _grade_lut(picks, tile_avg, cell_avgs, boxes, master_rgb, blend: float):
+    """成品全局校色 LUT（3×256）：逐通道均值/方差仿射校正，预测拼图→主图。
+
+    印刷业 proofing 的思路：逐格匹配修不了整体色调漂移（瓦片库的平均响应
+    ≠ 主图的响应），拼完的整图对着主图做色调校正，远观立刻收敛。
+    预测拼图 = 每格 (1-b)*瓦片均色 + b*格子主图均色，按格面积加权；
+    目标 = 主图像素分布。仿射（均值+方差）比分位数匹配稳健：平色主图
+    （直方图尖峰）不会把成品二值化。scale 钳制在 [0.5,2] 防极端。"""
+    if picks is None or len(picks) == 0:
+        return None
+    pred = (1.0 - blend) * tile_avg[np.asarray(picks)] + blend * cell_avgs
+    pred = np.clip(pred, 0, 255)
+    w = ((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])).astype(np.float64)
+    w = w / w.sum()
+    # 主图统计（大图降采样，统计量不需要全像素）
+    m = np.asarray(master_rgb, dtype=np.float64)
+    if m.shape[0] * m.shape[1] > 1_000_000:
+        step = int((m.shape[0] * m.shape[1] / 1_000_000) ** 0.5) or 1
+        m = m[::step, ::step]
+    lut = np.empty((3, 256), dtype=np.uint8)
+    vs = np.arange(256, dtype=np.float64)
+    for c in range(3):
+        mp = float((pred[:, c] * w).sum())
+        sp = float(np.sqrt((w * (pred[:, c] - mp) ** 2).sum()))
+        mm = float(m[..., c].mean())
+        sm = float(m[..., c].std())
+        scale = (sm / sp) if sp > 1e-6 and sm > 1e-6 else 1.0
+        scale = min(2.0, max(0.5, scale))          # 钳制：防极端对比度拉伸
+        lut[c] = np.clip(scale * (vs - mp) + mm, 0, 255).astype(np.uint8)
+    return lut
+
+
+def _apply_lut(img: Image.Image, lut) -> Image.Image:
+    """对整图应用逐通道 LUT（全局色调曲线，瓦片内容保留）。"""
+    if lut is None:
+        return img
+    arr = np.asarray(img)
+    out = np.empty_like(arr)
+    for c in range(3):
+        out[..., c] = lut[c][arr[..., c]]
+    return Image.fromarray(out)
+
+
 def _decode_tile(raw: bytes, need: Tuple[int, int], src: Optional[tuple] = None) -> Image.Image:
     """Decode a tile once, only as large as its biggest leaf needs.
 
@@ -542,6 +585,8 @@ def make_mosaic(
     style: str = "grid",
     signal: str = "detail",
     error_diffusion: bool = False,
+    color_grade: bool = True,
+    refine_passes: int = 2,
     shared_matcher: Optional[Matcher] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[int, int], None]] = None,
@@ -629,7 +674,8 @@ def make_mosaic(
         key = hashlib.sha256(json.dumps(
             {"master": master_sig, "db": [db.path, db.count()],
              "params": [cells_x, levels, detail_threshold, regions, top_k,
-                        radius, max_reuse, seed, blend, W, H, out_width],
+                        radius, max_reuse, seed, blend, W, H, out_width,
+                        int(error_diffusion), int(color_grade), int(refine_passes)],
              "leaves": [list(l) for l in leaves]},
             sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
@@ -705,6 +751,12 @@ def make_mosaic(
         undone = [i for i in range(total) if picks[i] is None]
         dists = np.zeros(total, dtype=np.float64)
         mean_dist = 0.0
+        # 成品全局校色：趁 Matcher 还在先取走瓦片平均色（释放后取不到）
+        tile_avg_np = None
+        if color_grade:
+            ta = matcher.avgs
+            tile_avg_np = np.asarray(ta.get() if hasattr(ta, "get") else ta,
+                                     dtype=np.float64)
         if undone:
             check()
             groups = _tile_groups(metas)
@@ -721,6 +773,7 @@ def make_mosaic(
                 matcher, np.asarray(boxes, dtype=np.int64)[undone], feats[undone],
                 avgs[undone], groups, (W, H), top_k=top_k, seed=seed,
                 max_reuse=max_reuse, error_diffusion=error_diffusion,
+                refine_passes=refine_passes,
                 progress=on_plan, check=check)
             for j, i in enumerate(undone):
                 picks[i] = int(up[j])
@@ -730,6 +783,12 @@ def make_mosaic(
             if shared_matcher is None:      # 共享 Matcher 由调用方持有，不释放
                 matcher.release()
         del feats
+        # 成品全局校色 LUT：预测拼图色调 → 主图色调（分位数匹配）。
+        # 用预测而非成品本身算，是为了流式/整图/续跑三条路共用同一张 LUT。
+        luts = (_grade_lut(picks, tile_avg_np, avgs, boxes, master,
+                           blend_pct / 200.0)          # SoftLight 有效强度 ≈ b/2
+                if color_grade else None)
+        del tile_avg_np
 
         # ---- pasting (parallel decode / fit / blend, ordered paste) --------
         say("正在拼贴…")
@@ -792,6 +851,7 @@ def make_mosaic(
             stream_info = render_streaming(
                 leaves, picks, ids, metas, db, out_path, OW, OH, s,
                 blend_pct=blend_pct, avgs=avgs,
+                luts=luts,
                 preview_path=preview_path,
                 should_cancel=should_cancel, progress=progress, status=status,
                 done_strips=done_strips, ckpt_strips=save_strips,
@@ -812,6 +872,8 @@ def make_mosaic(
 
             _paste_tiles(canvas, db, jobs, blend_pct, before, after, style=sty)
             del avgs
+            if luts is not None:
+                canvas = _apply_lut(canvas, luts)    # 成品全局校色（印刷 proofing）
 
             ext_ = os.path.splitext(out_path)[1].lower()
             if ext_ in (".jpg", ".jpeg"):
@@ -869,15 +931,25 @@ def make_mosaic(
                             (gy + 1) * out_px], axis=1)
         if status:
             status("正在智能分配瓦片…")
+        tile_avg_u = None
+        if color_grade:
+            ta = matcher.avgs
+            tile_avg_u = np.asarray(ta.get() if hasattr(ta, "get") else ta,
+                                    dtype=np.float64)
         picks, dists = plan_assignments(
             matcher, boxes_u, flat_f, flat_a, _tile_groups(metas),
             (cells_x * out_px, cells_y * out_px), top_k=top_k, seed=seed,
             max_reuse=max_reuse, error_diffusion=error_diffusion,
+            refine_passes=refine_passes,
             progress=(lambda ph, d, tot: progress(d, tot)) if progress else None,
             check=(lambda: (_ for _ in ()).throw(RenderCancelled("cancelled"))
                    if (should_cancel and should_cancel()) else None))
         if shared_matcher is None:          # 共享 Matcher 由调用方持有，不释放
             matcher.release()
+        luts_u = (_grade_lut(picks, tile_avg_u, flat_a, boxes_u, master,
+                             blend_pct / 200.0)
+                  if color_grade else None)
+        del tile_avg_u
         OW_u, OH_u = cells_x * out_px, cells_y * out_px
 
         if OW_u * OH_u > stream_threshold_px:
@@ -904,7 +976,8 @@ def make_mosaic(
             key = hashlib.sha256(json.dumps(
                 {"master": master_sig, "db": [db.path, db.count()],
                  "params": [cells_x, cells_y, out_px, top_k, radius, max_reuse,
-                            seed, blend, OW_u, OH_u, "uniform-stream"]},
+                            seed, blend, OW_u, OH_u, "uniform-stream",
+                            int(error_diffusion), int(color_grade), int(refine_passes)]},
                 sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
             def save_strips(n: int) -> None:
@@ -936,6 +1009,7 @@ def make_mosaic(
             stream_info = render_streaming(
                 leaves_u, picks, ids, metas, db, out_path, OW_u, OH_u, 1.0,
                 blend_pct=blend_pct, avgs=flat_a,
+                luts=luts_u,
                 preview_path=preview_path,
                 should_cancel=should_cancel, progress=progress, status=status,
                 done_strips=done_strips, ckpt_strips=save_strips,
@@ -993,6 +1067,8 @@ def make_mosaic(
                              if (should_cancel and should_cancel()) else None),
                      after=(lambda i: progress(i + 1, total)
                             if progress and ((i + 1) % 256 == 0 or i + 1 == total) else None))
+        if luts_u is not None:
+            canvas = _apply_lut(canvas, luts_u)          # 成品全局校色（印刷 proofing）
         stats_extra = {"mode": "uniform", "leaves": total,
                        "level_histogram": {1: total},
                        "leaf_rects": leaf_rects, "choices": chosen,

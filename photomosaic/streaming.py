@@ -94,11 +94,14 @@ def render_streaming(
     strip_rows: Optional[int] = None,
     style=None,
     master=None,
+    luts=None,
 ) -> Dict[str, object]:
     """条带式渲染 `leaves` 到 BigTIFF/PNG；返回统计（与整图路径逐像素一致）。
 
     style：风格渲染器（grid/brick/hex/dot）；有缝隙的风格每条带从主图
-    裁对应行区做高斯模糊垫底（与非流式路径的整图背景等价）。"""
+    裁对应行区做高斯模糊垫底（与非流式路径的整图背景等价）。
+    luts：成品全局校色 LUT（3×256），每条带写盘前应用（与整图同 LUT，
+    流式/整图/续跑三条路像素一致）。"""
     from .render import RenderCancelled, _decode_tile, _fit_tile
 
     total = len(leaves)
@@ -261,6 +264,11 @@ def render_streaming(
             else:
                 strip = Image.new("RGB", (OW, sy1 - sy0), (255, 255, 255))
             paste_strip(strip, sy0, sy1)
+            if luts is not None:                   # 成品全局校色（与整图同 LUT）
+                sa = np.array(strip, dtype=np.uint8)   # 可写拷贝（asptr 是只读视图）
+                for c in range(3):
+                    sa[..., c] = luts[c][sa[..., c]]
+                strip = Image.fromarray(sa)
             w.write_strip(si, np.asarray(strip, dtype=np.uint8))
             if not is_png:
                 w.flush(sync=(si + 1 == n_strips))

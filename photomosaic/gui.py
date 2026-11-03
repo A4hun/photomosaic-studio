@@ -1061,6 +1061,7 @@ class MainWindow(QMainWindow):
             "radius": self.radius_spin.value(),
             "blend": self.blend_slider.value(),
             "error_diffusion": self.ed_check.isChecked(),
+            "color_grade": self.grade_check.isChecked(),
             "seed": self.seed_spin.value(),
             "cell_px": self._cell_px() or 0,
             "out_dir": self.outdir_edit.text().strip(),
@@ -1112,6 +1113,7 @@ class MainWindow(QMainWindow):
         self.radius_spin.setValue(_safe_num(d, "radius", 0.0, float))
         self.blend_slider.setValue(_safe_num(d, "blend", 55, int))
         self.ed_check.setChecked(bool(d.get("error_diffusion", False)))
+        self.grade_check.setChecked(bool(d.get("color_grade", True)))
         self.seed_spin.setValue(_safe_num(d, "seed", -1, int))
         # 输出清晰度：新版存 cell_px；旧版只有 out_width → 按块数换算迁移
         cp = _safe_num(d, "cell_px", 0, int) or 0
@@ -1988,6 +1990,12 @@ class MainWindow(QMainWindow):
             "Floyd-Steinberg 式误差扩散：每个瓦片的色偏扩散到相邻格并补偿，"
             "整张图远观收敛到主图轮廓（业界成熟拼图保真技术）。建议开。")
         g3l.addRow(self.ed_check)
+        self.grade_check = QCheckBox("成品校色（对主图色调匹配）")
+        self.grade_check.setChecked(True)
+        self.grade_check.setToolTip(
+            "拼完后整图对着主图做色调校正（均值/方差仿射，印刷业 proofing）："
+            "修逐格匹配修不了的整体色调漂移。建议开。")
+        g3l.addRow(self.grade_check)
         right.addWidget(g3)
         right.addStretch(1)
         right_w = QWidget()
@@ -2445,6 +2453,7 @@ class MainWindow(QMainWindow):
             "signal": "saliency" if self.signal_combo.currentIndex() == 1 else "detail",
             "style": self._style,
             "error_diffusion": self.ed_check.isChecked(),
+            "color_grade": self.grade_check.isChecked(),
             "top_k": self.topk_spin.value(),
             "max_reuse": self.reuse_spin.value(),
             "radius": self.radius_spin.value() or None,
@@ -2558,6 +2567,7 @@ class MainWindow(QMainWindow):
             "style": self._style,
             "signal": "saliency" if self.signal_combo.currentIndex() == 1 else "detail",
             "error_diffusion": self.ed_check.isChecked(),
+            "color_grade": self.grade_check.isChecked(),
         }
         out_width = self._effective_out_width()
         if out_width:

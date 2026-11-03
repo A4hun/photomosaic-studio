@@ -108,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     common_match.add_argument("--error-diffusion", action="store_true",
                               help="误差扩散：瓦片色偏扩散到邻居并补偿，远观更像主图"
                                    "（Floyd-Steinberg 式，业界成熟拼图保真技术）")
+    common_match.add_argument("--no-grade", dest="color_grade", action="store_false",
+                              help="关闭成品全局校色（默认开：拼完对主图做均值/方差"
+                                   "色调校正，修整体色调漂移）")
+    common_match.add_argument("--refine-passes", type=int, default=2, metavar="N",
+                              help="迭代精炼轮数：贴完后反复换掉色偏最差的格子"
+                                   "（原版 Artensoft 的 Improving Quality），默认 2")
     common_match.add_argument("--stream-threshold", type=int, default=None, metavar="PX",
                               help="output pixel count above which rendering switches "
                                    f"to streaming BigTIFF (default {STREAM_THRESHOLD_PX})")
@@ -219,6 +225,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stream_strip_rows=args.stream_strip_rows,
                 blend=args.blend, out_width=args.out_width,
                 error_diffusion=args.error_diffusion,
+                color_grade=args.color_grade,
+                refine_passes=args.refine_passes,
                 progress=_progress_printer(),
             )
         _print_stats(stats)
@@ -246,6 +254,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 stream_strip_rows=args.stream_strip_rows,
                 blend=args.blend, out_width=args.out_width,
                 error_diffusion=args.error_diffusion,
+                color_grade=args.color_grade,
+                refine_passes=args.refine_passes,
                 progress=_progress_printer(),
             )
         finally:

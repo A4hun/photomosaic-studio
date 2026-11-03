@@ -54,7 +54,7 @@ def test_brick_offset_applies_with_leaf_boxes(env):
     out = tmp / "brick_manual.png"
     stats = make_mosaic(master, db, str(out), cells_x=4, top_k=1, seed=1,
                         blend=0.0, leaf_boxes=_uniform_boxes(96, 96, 4),
-                        levels=1, style="brick")
+                        levels=1, style="brick", color_grade=False)
     assert stats["mode"] == "manual"
     with Image.open(out) as im:
         got = im.convert("RGB")
@@ -72,7 +72,8 @@ def test_brick_offset_applies_in_streaming(env):
     out = tmp / "brick_stream.png"
     stats = make_mosaic(master, db, str(out), cells_x=4, top_k=1, seed=1,
                         blend=0.0, leaf_boxes=_uniform_boxes(96, 96, 4),
-                        levels=1, style="brick", stream_threshold_px=1)
+                        levels=1, style="brick", stream_threshold_px=1,
+                        color_grade=False)
     assert stats.get("streamed") is True
     with Image.open(out) as im:
         got = im.convert("RGB")

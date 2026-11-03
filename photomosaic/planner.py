@@ -41,6 +41,7 @@ def plan_assignments(
     max_reuse: int = 0,
     avoid_adjacent: bool = True,
     error_diffusion: bool = False,
+    refine_passes: int = 0,
     progress: Optional[Callable[[str, int, int], None]] = None,
     check: Optional[Callable[[], None]] = None,
 ):
@@ -100,10 +101,11 @@ def plan_assignments(
     err = None
     grid_rc = None
     tile_avg = None
-    if error_diffusion:
+    if error_diffusion or refine_passes > 0:
         # 瓦片平均色（转成 numpy；GPU 时在 CPU 上取一份）
         tile_avg = np.asarray(matcher.avgs if not hasattr(matcher.avgs, "get")
                               else matcher.avgs.get(), dtype=np.float64)
+    if error_diffusion:
         # 叶子按其中心映射到粗网格（自适应大小格混排也按中心归位）
         min_w = max(1, int((boxes[:, 2] - boxes[:, 0]).min()))
         min_h = max(1, int((boxes[:, 3] - boxes[:, 1]).min()))
@@ -202,6 +204,45 @@ def plan_assignments(
         if avoid_adjacent:
             x0, y0, x1, y1 = obox[i]
             owner[y0:y1, x0:x1] = g
+    # ---- 迭代精炼（原版 Artensoft 的 "Improving Quality"）------------------
+    # 贴完后再改：每轮取色偏最差的格子，在候选池里换上平均色更贴的瓦片。
+    # 特征距离保证结构可接受（候选本来就是 top-k），换的时候只优化颜色。
+    for _pass in range(max(0, int(refine_passes))):
+        if check:
+            check()
+        if progress:
+            progress("refine", _pass, int(refine_passes))
+        cur_err = ((tile_avg[picks] - avgs) ** 2).sum(axis=1)      # (L,) 色偏²
+        if not np.isfinite(cur_err).all() or cur_err.sum() <= 1e-9:
+            break
+        worst = np.argsort(cur_err)[::-1][: max(1, L // 8)]        # 最差 12.5%
+        improved = 0
+        for i in worst:
+            ci = cand_i[i]
+            cd = cand_d[i]
+            ok = np.isfinite(cd)
+            if not ok.any():
+                continue
+            # 候选的色偏²（目标 = 本格主图均色）
+            errs = ((tile_avg[ci] - avgs[i]) ** 2).sum(axis=1)
+            errs[~ok] = np.inf
+            if max_reuse > 0:
+                errs[usage[ci] >= max_reuse] = np.inf
+            j = int(np.argmin(errs))
+            if np.isfinite(errs[j]) and int(ci[j]) != int(picks[i]) \
+                    and errs[j] < cur_err[i]:
+                old = int(picks[i])
+                new = int(ci[j])
+                usage[old] -= 1
+                guse[int(groups[old])] -= 1
+                usage[new] += 1
+                guse[int(groups[new])] += 1
+                picks[i] = new
+                dists[i] = float(cd[j])
+                cur_err[i] = errs[j]
+                improved += 1
+        if improved == 0:
+            break
     if progress:
         progress("plan", L, L)
     return picks, dists
