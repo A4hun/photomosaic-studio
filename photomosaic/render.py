@@ -751,7 +751,17 @@ def make_mosaic(
             variant_counts[variant] = variant_counts.get(variant, 0) + 1
             if stream:
                 continue                      # 流式路径按条带自行生成贴图任务
-            jobs.append((i, ox0, oy0, (max(1, ox1 - ox0), max(1, oy1 - oy0)), tid,
+            # 风格布局偏移（砖墙偶数行右移半格）：按叶子所属的基础行/列推导，
+            # 与 uniform 分支的 offset 语义一致（leaf_rects 保持逻辑格不变）。
+            bw = (x1 - x0) << (level - 1)       # 源图坐标的基础块宽/高
+            bh = (y1 - y0) << (level - 1)
+            row = int((y0 + (y1 - y0) / 2) / max(1, bh))
+            col = int((x0 + (x1 - x0) / 2) / max(1, bw))
+            dx, dy = sty.offset(row, col,
+                                max(1, int(round(bw * s))),
+                                max(1, int(round(bh * s))))
+            jobs.append((i, ox0 + dx, oy0 + dy,
+                         (max(1, ox1 - ox0), max(1, oy1 - oy0)), tid,
                          (int(avgs[i][0]), int(avgs[i][1]), int(avgs[i][2]))))
         last_ckpt = [time.monotonic()]
 

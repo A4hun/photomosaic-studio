@@ -114,12 +114,24 @@ def render_streaming(
     leaf_rects: List[Tuple[int, int, int, int, int]] = []
     chosen: List[int] = []
     histogram: Dict[int, int] = {}
+    leaf_offsets: List[Tuple[int, int]] = []
     for i, (x0, y0, x1, y1, level) in enumerate(leaves):
         ox0, oy0 = int(round(x0 * s)), int(round(y0 * s))
         ox1, oy1 = int(round(x1 * s)), int(round(y1 * s))
         histogram[int(level)] = histogram.get(int(level), 0) + 1
         leaf_rects.append((ox0, oy0, ox1, oy1, int(level)))
         chosen.append(int(ids[int(picks[i])]))
+        # 风格布局偏移（砖墙偶数行右移半格）：与 render.make_mosaic 的
+        # manual/uniform 分支同一推导，保证流式与整图路径逐像素一致。
+        if style is not None:
+            bw = (x1 - x0) << (int(level) - 1)
+            bh = (y1 - y0) << (int(level) - 1)
+            row = int((y0 + (y1 - y0) / 2) / max(1, bh))
+            col = int((x0 + (x1 - x0) / 2) / max(1, bw))
+            leaf_offsets.append(style.offset(
+                row, col, max(1, int(round(bw * s))), max(1, int(round(bh * s)))))
+        else:
+            leaf_offsets.append((0, 0))
 
     # 全局解码尺寸表：与整图路径 _paste_tiles 的 need 完全一致（保证 draft
     # 解码缩放级别相同 → 逐像素一致）。
@@ -207,14 +219,16 @@ def render_streaming(
                         continue
                     if iy0 != oy0 or iy1 != oy0 + size[1]:
                         img = img.crop((0, iy0 - oy0, size[0], iy1 - oy0))
+                    # 风格布局偏移只移动贴图位置；leaf_rects 仍是逻辑格（统计/替换映射用）
+                    px0 = ox0 + leaf_offsets[i][0]
                     if style is not None and style.has_gaps():
                         # 蒙版按整叶尺寸生成再同步裁剪（不能按裁剪后尺寸重画形状）
                         m_full = style.mask(size)
                         m = m_full.crop((0, iy0 - oy0, size[0], iy1 - oy0)) \
                             if (iy0 != oy0 or iy1 != oy0 + size[1]) else m_full
-                        strip.paste(img, (ox0, iy0 - sy0), m)
+                        strip.paste(img, (px0, iy0 - sy0), m)
                     else:
-                        strip.paste(img, (ox0, iy0 - sy0))
+                        strip.paste(img, (px0, iy0 - sy0))
                 if decoded_est > _DECODE_CAP_BYTES:   # 与 _paste_tiles 的上限一致
                     decoded.clear()
                     decoded_est = 0

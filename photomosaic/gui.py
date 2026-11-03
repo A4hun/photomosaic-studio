@@ -1530,9 +1530,11 @@ class MainWindow(QMainWindow):
         base_x = self.cells_x_spin.value()
         base_y = max(1, round(pix.height() / (pix.width() / base_x)))
         pairs = [(tuple(map(int, b)), int(l)) for b, l in leaves]
+        # 粒度上限跟随右侧「嵌套层级」所选级数（界面承诺"最细粒度=所选级数"）；
+        # 此前硬编码 max(5, …)，物化后右键/套索可细分到 5 级，越过所选上限。
         self.tree = QuadTree.from_leaf_boxes(
             pix.width(), pix.height(), base_x, base_y, pairs,
-            max_level=max([5] + [p[1] for p in pairs]), min_px=1)
+            max_level=max([self._radio_level()] + [p[1] for p in pairs]), min_px=1)
         self.grid_view.set_tree(self.tree)
         # 关掉自动细分：手动网格就是最终网格
         self.auto_check.blockSignals(True)

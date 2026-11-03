@@ -115,6 +115,34 @@ def test_batch_matrix_skips_existing(batch_setup):
     assert stats2["skipped"] == 6 and stats2["ok"] == 0
 
 
+def test_batch_override_style_reflected_in_filename(batch_setup, tmp_path):
+    """回归：单独配置改了风格时，输出文件名后缀必须是实际渲染风格。
+
+    旧实现按批量任务风格命名：m1 覆盖成 dot 却产出 m1_dot 内容、
+    m1_hex 名字的文件（名实不符）。"""
+    import os
+
+    from photomosaic.batch import BatchRunner, scan_masters
+
+    db_path, masters_dir, tmp = batch_setup
+    m = scan_masters(masters_dir)[0]
+    out_dir = str(tmp_path / "ovr")
+    with BatchRunner(db_path) as runner:
+        stats = runner.run([m], out_dir, styles=["hex"], auto_adapt=False,
+                           base_params={"levels": 1, "seed": 1},
+                           overrides={m: {"style": "dot"}})
+    assert stats["ok"] == 1 and stats["failed"] == 0
+    out = stats["per_image"][0]["output"]
+    assert os.path.basename(out).endswith("_dot_mosaic.png"), out
+    assert os.path.exists(out)
+    # 断点续批一致性：重跑应按"实际风格名"跳过，而不是按旧名重渲
+    with BatchRunner(db_path) as runner:
+        stats2 = runner.run([m], out_dir, styles=["hex"], auto_adapt=False,
+                            base_params={"levels": 1, "seed": 1},
+                            overrides={m: {"style": "dot"}})
+    assert stats2["skipped"] == 1 and stats2["ok"] == 0
+
+
 def test_batch_single_failure_does_not_stop_others(batch_setup, tmp_path):
     from photomosaic.batch import BatchRunner, scan_masters
 

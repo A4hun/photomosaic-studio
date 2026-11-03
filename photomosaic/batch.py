@@ -18,6 +18,7 @@ from PIL import Image
 from .db import TileDB
 from .match import Matcher
 from .render import make_mosaic
+from .styles import get_style
 from .tuning import recommend_params
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
@@ -92,7 +93,13 @@ class BatchRunner:
             if should_cancel and should_cancel():
                 break
             stem = os.path.splitext(os.path.basename(master_path))[0]
-            suffix = f"_{style}" if style != "grid" else ""
+            # 命名跟随"实际生效风格"：单独配置（overrides）改了风格时，
+            # 文件名后缀也必须跟着变，否则名字说 hex、内容却是 dot。
+            # 生效风格只取决于任务风格 + 覆盖风格（recommend 不含 style），
+            # 无需打开主图即可算出，跳过判断不受影响。
+            ov = (overrides or {}).get(master_path) or {}
+            eff_style = get_style(str(ov.get("style", style))).name
+            suffix = f"_{eff_style}" if eff_style != "grid" else ""
             out_path = os.path.join(out_dir, f"{stem}{suffix}_mosaic.png")
             if not overwrite and os.path.exists(out_path):
                 skipped += 1
@@ -129,7 +136,7 @@ class BatchRunner:
                 dt = time.time() - t0
                 ok += 1
                 per_image.append({
-                    "master": master_path, "style": style, "output": out_path,
+                    "master": master_path, "style": eff_style, "output": out_path,
                     "seconds": round(dt, 1), "size": stats.get("size"),
                 })
             except Exception as exc:  # noqa: BLE001  单张失败不拖垮整批

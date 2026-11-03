@@ -239,21 +239,23 @@ class QuadTree:
         return self.refine_region(box, target_level)
 
     def clear_region(self, box: Box) -> bool:
-        """Cancel subdivision inside `box`: every subdivided cell whose centre
-        lies in the box is merged back into one cell (top-down, so the coarsest
-        such cell wins)."""
+        """Cancel subdivision touched by `box`: every subdivided cell that
+        intersects the box is merged back into one cell (top-down, so the
+        coarsest such cell wins).  Uses the same intersection test as
+        refine_region, so drawing the same rectangle a second time exactly
+        undoes the refinement (the old centre-containment rule left
+        partially-hit boundary cells half-refined)."""
         rx0, ry0, rx1, ry1 = box
         changed = False
 
-        def inside(b: Box) -> bool:
-            cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
-            return rx0 <= cx < rx1 and ry0 <= cy < ry1
+        def hit(b: Box) -> bool:
+            return b[0] < rx1 and rx0 < b[2] and b[1] < ry1 and ry0 < b[3]
 
         def rec(n: Node) -> None:
             nonlocal changed
             if n.is_leaf:
                 return
-            if inside(n.box):
+            if hit(n.box):
                 n.children = None
                 changed = True
                 return
