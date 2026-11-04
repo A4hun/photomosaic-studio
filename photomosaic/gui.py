@@ -124,12 +124,16 @@ def _page(title: str, subtitle: str, body: QWidget) -> QWidget:
     w = QWidget()
     w.setObjectName("page")
     lay = QVBoxLayout(w)
-    lay.setContentsMargins(30, 24, 26, 12)
+    lay.setContentsMargins(18, 20, 14, 10)   # 曾 (30,24,26,12)：窄窗口省宽度
     lay.setSpacing(4)
     t = QLabel(title)
     t.setObjectName("pageTitle")
     s = QLabel(subtitle)
     s.setObjectName("pageSub")
+    # 副标题换行 + 不顶宽度（窄窗口副标题曾把内容最小宽顶到 922px 出横向滚动条）
+    s.setWordWrap(True)
+    s.setMinimumWidth(0)
+    s.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
     lay.addWidget(t)
     lay.addWidget(s)
     lay.addSpacing(6)
@@ -863,7 +867,7 @@ class MainWindow(QMainWindow):
         # ---- sidebar ----------------------------------------------------
         side = QWidget()
         side.setObjectName("sidebar")
-        side.setFixedWidth(210)
+        side.setFixedWidth(170)          # 曾 210：窄窗口下页面可用宽度被吃太多
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 0)
         title = QLabel("照片马赛克工作室")
@@ -1011,14 +1015,33 @@ class MainWindow(QMainWindow):
             try:
                 self.splitter3.restoreState(
                     QByteArray.fromBase64(self._splitter3_saved.encode("ascii")))
+                self._clamp_splitter3()
                 return
             except Exception:
                 pass                              # 恢复失败 → 回落默认比例
+        self._clamp_splitter3(ratio=0.75)
+
+    def _clamp_splitter3(self, ratio: Optional[float] = None) -> None:
+        """分栏钳制：右栏 ≤430px（窄窗口绝不挤占编辑器），多余全给左栏。
+
+        ratio=None 时按当前尺寸只做钳制（窗口 resize 后调用）。"""
         total = self.splitter3.width()
         if total <= 0:
             return
-        left = max(1, int(round(total * 0.75)))
-        self.splitter3.setSizes([left, max(1, total - left)])
+        right_min = 280
+        right_max = 430
+        if ratio is not None:
+            right_want = max(right_min, min(right_max, int(round(total * (1 - ratio)))))
+        else:
+            right_want = self.splitter3.sizes()[1]
+        right = int(min(right_max, max(right_min, right_want)))
+        self.splitter3.setSizes([max(1, total - right), right])
+
+    def resizeEvent(self, ev) -> None:
+        """窗口变化后钳制③页分栏（右栏不超 430，左栏吃满剩余）。"""
+        super().resizeEvent(ev)
+        if getattr(self, "_splitter3_initialized", False):
+            QTimer.singleShot(0, lambda: self._clamp_splitter3())
 
     # ---- window geometry -------------------------------------------------
     @staticmethod
@@ -1966,18 +1989,22 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         gl.addWidget(hint)
         # 重置/合并按钮分两行 2×2 摆：单行四个按钮的文本宽度会顶住窄窗口
+        # （文本缩短防挤：详情进 tooltip）
         brow = QHBoxLayout()
         bmerge = QHBoxLayout()
         br = QPushButton("重置网格")
         br.clicked.connect(self._reset_grid)
         brow.addWidget(br)
-        bm3 = QPushButton("合并全部 3 级元素")
+        bm3 = QPushButton("合并 3 级")
+        bm3.setToolTip("把所有 3 级及更细的格子合并回 3 级（大块化）。")
         bm3.clicked.connect(lambda _=False: self._merge_level(3))
         brow.addWidget(bm3)
-        bm4 = QPushButton("合并全部 4 级元素")
+        bm4 = QPushButton("合并 4 级")
+        bm4.setToolTip("把所有 4 级及更细的格子合并回 4 级（大块化）。")
         bm4.clicked.connect(lambda _=False: self._merge_level(4))
         bmerge.addWidget(bm4)
-        bm5 = QPushButton("合并全部 5 级元素")
+        bm5 = QPushButton("合并 5 级")
+        bm5.setToolTip("把所有 5 级（最细级）的格子合并回 5 级的上一级。")
         bm5.clicked.connect(lambda _=False: self._merge_level(5))
         bmerge.addWidget(bm5)
         bmerge.addStretch(1)
@@ -2000,21 +2027,24 @@ class MainWindow(QMainWindow):
                                      "打开主图时默认按宽度/32 自动给值。")
         self.cells_x_spin.valueChanged.connect(self._on_cells_changed)
         f1 = QFormLayout()
-        f1.addRow("第 1 级基础块数", self.cells_x_spin)
+        f1.addRow("基础块数", self.cells_x_spin)
         g2l.addLayout(f1)
         g2l.addWidget(_hint("横向基础块数；自动按“总数约 300”（原版甜点）换算；改过不再覆盖。"))
         self.level_radios: List[QRadioButton] = []
-        descs = ["一级：经典方形网格马赛克", "二级：部分块细分 1/2，提升重点细节",
-                 "三级：含 1、1/2、1/4 三种尺寸", "四级：含 1/8 尺寸，细节更丰富",
-                 "五级：含 1/16 尺寸，适合大幅打印（较慢）"]
-        for i, d in enumerate(descs, start=1):
+        descs = ["一级：方形网格", "二级：重点 1/2 细分", "三级：到 1/4 尺寸",
+                 "四级：到 1/8 尺寸", "五级：到 1/16 尺寸"]
+        tips = ["经典均匀方形网格，不细分。", "部分块细分 1/2，提升重点细节。",
+                "含 1、1/2、1/4 三种尺寸。", "含 1/8 尺寸，细节更丰富。",
+                "含 1/16 尺寸，大幅打印最细（较慢，建议先小图试）。"]
+        for i, (d, tip) in enumerate(zip(descs, tips), start=1):
             rb = QRadioButton(d)
+            rb.setToolTip(tip)          # 长文案进 tooltip，不顶布局宽度
             rb.setChecked(i == 4)
             self.level_radios.append(rb)
             g2l.addWidget(rb)
         for rb in self.level_radios:
             rb.toggled.connect(lambda _c=False: self._on_level_change())
-        self.auto_check = QCheckBox("按图像细节自动细分（能量阈值）")
+        self.auto_check = QCheckBox("自动细分（能量阈值）")
         self.auto_check.setChecked(True)
         self.auto_check.setToolTip("勾选后层级上限=所选单选；选「一级」即为经典均匀网格，不再细分。")
         g2l.addWidget(self.auto_check)
@@ -2061,7 +2091,7 @@ class MainWindow(QMainWindow):
         right.addWidget(g2)
 
         # ---- 风格（可视化卡片：每种风格用你的主图实时渲染小样例）------------
-        gstyle = QGroupBox("风格（点击卡片切换，缩略图是真实效果预览）")
+        gstyle = QGroupBox("风格（点击切换，缩略图=真实效果）")
         gstyle_l = QGridLayout(gstyle)
         gstyle_l.setHorizontalSpacing(4)
         self._style_buttons: Dict[str, QPushButton] = {}
@@ -2073,7 +2103,7 @@ class MainWindow(QMainWindow):
             b.setMinimumHeight(56)
             b.clicked.connect(lambda _c=False, n=name: self._select_style(n))
             self._style_buttons[name] = b
-            gstyle_l.addWidget(b, idx // 3, idx % 3)
+            gstyle_l.addWidget(b, idx, 0)             # 单列：右栏地板最窄
         right.addWidget(gstyle)
         self._refresh_style_cards()
 
@@ -2083,21 +2113,23 @@ class MainWindow(QMainWindow):
         self.topk_spin.setRange(1, 100)
         self.topk_spin.setValue(8)
         self.topk_spin.setToolTip("每格选最接近的前 K 名瓦片再随机抽一个。1=总选最优。")
-        g3l.addRow("近优随机候选 K", self.topk_spin)
+        g3l.addRow("候选 K", self.topk_spin)
         g3l.addWidget(_hint("从前 K 个最像的瓦片里随机挑 1 个：K=1 总选最优，越大越有变化。"))
         self.reuse_spin = QSpinBox()
         self.reuse_spin.setRange(0, 100000)
+        self.reuse_spin.setFixedWidth(110)
         self.reuse_spin.setValue(0)
         self.reuse_spin.setSpecialValueText("不限")
         self.reuse_spin.setToolTip("每张瓦片最多被用几次。不限=不限制。")
-        g3l.addRow("单块最大复用", self.reuse_spin)
+        g3l.addRow("最大复用", self.reuse_spin)
         g3l.addWidget(_hint("每张瓦片最多被用几次；「不限」适合小图库，设值可多用不同照片。"))
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(0.0, 500.0)
+        self.radius_spin.setFixedWidth(110)
         self.radius_spin.setValue(0.0)
         self.radius_spin.setSpecialValueText("关闭")
         self.radius_spin.setToolTip("先按平均色粗筛：超出此 RGB 距离的瓦片不参与打分。推荐 3–5。")
-        g3l.addRow("颜色半径预筛", self.radius_spin)
+        g3l.addRow("色半径", self.radius_spin)
         rnote = QLabel("注意：半径不要设太大；官方推荐 3–5。过小可能找不到足够同色图。")
         rnote.setObjectName("hint")
         rnote.setWordWrap(True)
@@ -2106,10 +2138,11 @@ class MainWindow(QMainWindow):
         self.blend_slider.setRange(0, 100)
         self.blend_slider.setValue(55)
         self.blend_slider.setToolTip("瓦片向所在格均色做柔光（SoftLight）混合；0=保留本色。")
-        g3l.addRow("色彩融合强度（柔光）", self.blend_slider)
+        g3l.addRow("融合强度", self.blend_slider)
         g3l.addWidget(_hint("瓦片向所在格的主图均色做柔光混合，远看更像原图；0=保留本色。"))
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(-1, 2**31 - 1)
+        self.seed_spin.setFixedWidth(110)
         self.seed_spin.setValue(-1)
         self.seed_spin.setSpecialValueText("随机")
         self.seed_spin.setToolTip("固定种子 ⇒ 同库同参数逐字节相同结果；-1=每次随机。")
@@ -2136,13 +2169,17 @@ class MainWindow(QMainWindow):
         right.addStretch(1)
         right_w = QWidget()
         right_w.setLayout(right)
+        # 右栏定宽带 [300, 430]：显式最小宽覆盖布局 hint（所有子控件 ≤253，
+        # 300 放得下）——窄窗口右栏绝不挤占左侧编辑器
+        right_w.setMinimumWidth(300)
+        right_w.setMaximumWidth(430)
         # 左（网格编辑器）右（设置列）改为可拖动分栏：初始 3:1，状态持久化
         self.splitter3 = QSplitter(Qt.Orientation.Horizontal)
         self.splitter3.setChildrenCollapsible(False)
         self.splitter3.addWidget(g)
         self.splitter3.addWidget(right_w)
         self.splitter3.setStretchFactor(0, 3)
-        self.splitter3.setStretchFactor(1, 1)
+        self.splitter3.setStretchFactor(1, 0)      # 多余宽度全给左侧编辑器
         lay.addWidget(self.splitter3)
         lay.setContentsMargins(0, 0, 16, 0)
         lay.setSpacing(0)
@@ -2286,9 +2323,9 @@ class MainWindow(QMainWindow):
         self.cell_px_spin = QSpinBox()
         self.cell_px_spin.setRange(0, 8192)
         self.cell_px_spin.setValue(0)                # 0 = 与主图同大
-        self.cell_px_spin.setSpecialValueText("与主图同大（快速预览）")
+        self.cell_px_spin.setSpecialValueText("与主图同大")
         self.cell_px_spin.setSuffix(" px/格")
-        self.cell_px_spin.setMinimumWidth(180)
+        self.cell_px_spin.setMinimumWidth(0)
         self.cell_px_spin.setToolTip(
             "每个碎片贴出来占多少像素，直接决定成品清晰度与总尺寸：\n"
             "输出宽度 = 横向基础块数 × 每格像素。\n"
@@ -2363,13 +2400,22 @@ class MainWindow(QMainWindow):
         bexp = QPushButton("导出…")
         bexp.clicked.connect(self._export)
         erow.addWidget(bexp)
-        for text, c, r in (("分页打印 3×2（6 张）", 3, 2), ("分页打印 2×3（6 张）", 2, 3)):
-            bp = QPushButton(text)
-            bp.setToolTip("把成品切成 6 张分别打印，拼起来就是大幅海报（适合 A4 打印机）。")
-            bp.clicked.connect(lambda _=False, cc=c, rr=r: self._poster(cc, rr))
-            erow.addWidget(bp)
         erow.addStretch(1)
         lay.addLayout(erow)
+
+        # 海报分页独立一行（曾与导出控件同行把内容最小宽顶到 922px 出横向滚动条）
+        prow = QHBoxLayout()
+        plbl = QLabel("海报分页")
+        plbl.setObjectName("hint")
+        prow.addWidget(plbl)
+        for text, c, r in (("分页 3×2", 3, 2), ("分页 2×3", 2, 3)):
+            bp = QPushButton(text)
+            bp.setToolTip(
+                "把成品切成 6 张分别打印，拼起来就是大幅海报（适合 A4 打印机）。")
+            bp.clicked.connect(lambda _=False, cc=c, rr=r: self._poster(cc, rr))
+            prow.addWidget(bp)
+        prow.addStretch(1)
+        lay.addLayout(prow)
         self.stats_view = QTextEdit()
         self.stats_view.setReadOnly(True)
         self.stats_view.setMaximumHeight(110)
